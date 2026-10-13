@@ -186,6 +186,39 @@ class DPSolution:
         dest = int(self.trans.move_dest[mi])
         return piece, dest
 
+    def _move_values(self, h, lo=0, hi=None):
+        """q*_h for moves lo..hi (flat move indices): one Bellman backup from V[h-1]."""
+        t = self.trans
+        hi = t.n_moves if hi is None else hi
+        h = min(h, self.budget)
+        if lo == 0 and hi == t.n_moves:
+            sum_next = np.bincount(t.flat_move_idx, weights=self.V[h - 1][t.flat_next_board],
+                                   minlength=t.n_moves)
+        else:
+            a, b = np.searchsorted(t.flat_move_idx, [lo, hi])
+            sum_next = np.bincount(t.flat_move_idx[a:b] - lo,
+                                   weights=self.V[h - 1][t.flat_next_board[a:b]], minlength=hi - lo)
+        n_rep = t.move_n_replies[lo:hi].astype(np.float64)
+        n_cap = t.move_n_captures[lo:hi].astype(np.float64)
+        mixed = (n_cap * LOSS_REWARD + (n_rep - n_cap) * STEP_REWARD + GAMMA * sum_next) \
+            / np.where(n_rep == 0, 1.0, n_rep)
+        return np.where(t.move_kind[lo:hi] == 2, mixed, t.move_terminal_val[lo:hi])
+
+    def q_all(self, h):
+        return self._move_values(h)
+
+    def q_values(self, wk, wq, bk, h):
+        """[(piece, dest, q*_h(s, a), kind)] for every legal White move of a board,
+        kind in {'checkmate', 'stalemate', 'ongoing'}."""
+        bid = self.space.board_index.get((wk, wq, bk))
+        if bid is None:
+            return None
+        lo, hi = int(self.trans.move_board_start[bid]), int(self.trans.move_board_start[bid + 1])
+        q = self._move_values(h, lo, hi)
+        kinds = ("checkmate", "stalemate", "ongoing")
+        return [("K" if self.trans.move_piece[m] == 0 else "Q", int(self.trans.move_dest[m]),
+                 float(q[m - lo]), kinds[self.trans.move_kind[m]]) for m in range(lo, hi)]
+
     def save(self, path: Path = CACHE_PATH):
         path.parent.mkdir(parents=True, exist_ok=True)
         np.savez_compressed(str(path) + ".npz", V=self.V, PI=self.PI, budget=self.budget)

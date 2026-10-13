@@ -3,9 +3,11 @@ from flask import Blueprint, jsonify, request
 from .chess_engine import (
     Position, sq_name, name_to_sq, white_legal_moves, step as engine_step,
     random_start_position, DEFAULT_BUDGET, GAMMA, STEP_REWARD, WIN_REWARD, LOSS_REWARD,
+    kings_adjacent, black_in_check,
 )
-from .jobs import dp_state, job_registry
-from .mc_agent import MCAgent, ALPHA, EPSILON, Q0
+from .jobs import dp_state, job_registry, baseline_check
+from .mc_agent import ALPHA, EPSILON, Q0
+from .state_space import apply_symmetry
 from .results_data import OFFICIAL_RESULTS
 
 bp = Blueprint("api", __name__, url_prefix="/api")
@@ -131,16 +133,48 @@ def dp_query():
     if dp_state.solution is None:
         return jsonify({"error": "DP solution not ready"}), 409
     wk, wq, bk = int(request.args["wk"]), int(request.args["wq"]), int(request.args["bk"])
-    h = int(request.args.get("moves_left", dp_state.solution.budget))
+    h = max(1, int(request.args.get("moves_left", dp_state.solution.budget)))
+    err = _position_error(wk, wq, bk)
+    if err:
+        return jsonify({"error": err}), 400
     val = dp_state.solution.value(wk, wq, bk, h)
-    if val is None:
-        return jsonify({"error": "state not found (check it's Black-not-in-check, valid placement)"}), 404
     mv = dp_state.solution.best_move(wk, wq, bk, h)
     piece, dest = mv if mv else (None, None)
+    rows = [{"piece": p, "dest": d, "dest_name": sq_name(d), "q": q, "kind": kind}
+            for p, d, q, kind in dp_state.solution.q_values(wk, wq, bk, h)]
+    rows.sort(key=lambda r: -r["q"])
+    best_q = rows[0]["q"] if rows else None
+    for r in rows:
+        r["optimal"] = abs(r["q"] - best_q) < 1e-9
     return jsonify({
         "value": val,
         "best_move": {"piece": piece, "dest": dest, "dest_name": sq_name(dest)} if mv else None,
+        "qvalues": rows,
     })
+
+
+def _position_error(wk, wq, bk):
+    """Human-readable reason a (wk, wq, bk) board is not a White-to-move state, or None."""
+    if len({wk, wq, bk}) != 3:
+        return "Two pieces are on the same square."
+    if kings_adjacent(wk, bk):
+        return "The two kings are adjacent — illegal position."
+    if black_in_check(wk, wq, bk):
+        return "Black is in check, so it would be Black's move — not a White-to-move state."
+    return None
+
+
+@bp.get("/baselines")
+def baselines():
+    return jsonify(baseline_check.summary())
+
+
+@bp.post("/baselines/verify")
+def baselines_verify():
+    if dp_state.solution is None:
+        return jsonify({"error": "DP solution not ready"}), 409
+    baseline_check.start()
+    return jsonify(baseline_check.summary())
 
 
 # ---------------------------------------------------------------- MC training mode
@@ -175,21 +209,44 @@ def train_stop(job_id):
     return jsonify({"stopped": True})
 
 
+@bp.get("/train/jobs")
+def train_jobs():
+    return jsonify({"jobs": job_registry.list()})
+
+
+@bp.post("/train/evaluate/<job_id>")
+def train_evaluate(job_id):
+    job = job_registry.get(job_id)
+    if job is None:
+        return jsonify({"error": "unknown job_id"}), 404
+    if dp_state.solution is None:
+        return jsonify({"error": "exact evaluation needs the DP solution (solve it first)"}), 409
+    job.start_evaluation()
+    return jsonify(job.summary())
+
+
 @bp.get("/train/qtable/<job_id>")
 def train_qtable(job_id):
     job = job_registry.get(job_id)
     if job is None:
         return jsonify({"error": "unknown job_id"}), 404
     wk, wq, bk = int(request.args["wk"]), int(request.args["wq"]), int(request.args["bk"])
+    err = _position_error(wk, wq, bk)
+    if err:
+        return jsonify({"error": err}), 400
     pos = Position(wk, wq, bk, 1)
     moves = white_legal_moves(pos)
     cwk, cwq, cbk, k = job.agent.canon_board(wk, wq, bk)
     rows = []
     for piece, dest in moves:
         v = job.agent.q_canon(cwk, cwq, cbk, k, piece, dest)
-        rows.append({"piece": piece, "dest": dest, "dest_name": sq_name(dest), "q": v})
+        n = job.agent.visit_count.get((cwk, cwq, cbk, piece, apply_symmetry(dest, k)), 0)
+        rows.append({"piece": piece, "dest": dest, "dest_name": sq_name(dest), "q": v, "visits": n})
     rows.sort(key=lambda r: -r["q"])
-    return jsonify({"qvalues": rows})
+    return jsonify({
+        "qvalues": rows,
+        "canonical": {"wk": sq_name(cwk), "wq": sq_name(cwq), "bk": sq_name(cbk), "symmetry": k},
+    })
 
 
 # ---------------------------------------------------------------- dashboard mode

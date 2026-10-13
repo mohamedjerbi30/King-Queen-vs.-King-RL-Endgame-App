@@ -48,6 +48,10 @@ export const api = {
   trainStop: (jobId) => req(`/train/stop/${jobId}`, { method: "POST" }),
   trainQtable: (jobId, wk, wq, bk) =>
     req(`/train/qtable/${jobId}?wk=${wk}&wq=${wq}&bk=${bk}`),
+  trainJobs: () => req("/train/jobs"),
+  trainEvaluate: (jobId) => req(`/train/evaluate/${jobId}`, { method: "POST" }),
 
   results: () => req("/results"),
+  baselines: () => req("/baselines"),
+  baselinesVerify: () => req("/baselines/verify", { method: "POST" }),
 };

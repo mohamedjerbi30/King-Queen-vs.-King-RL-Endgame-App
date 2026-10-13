@@ -9,6 +9,7 @@ chart. Everything is guarded by a lock because Flask's dev and prod servers
 may both use multiple worker threads.
 """
 from __future__ import annotations
+import json
 import threading
 import time
 import uuid
@@ -17,11 +18,13 @@ from pathlib import Path
 from .state_space import StateSpace
 from .dp_solver import Transitions, DPSolution, backward_induction, DEFAULT_BUDGET
 from .mc_agent import MCAgent
+from . import policy_eval
 
 DATA_DIR = Path(__file__).parent / "data"
 SPACE_PATH = DATA_DIR / "state_space.pkl"
 TRANS_PATH = DATA_DIR / "transitions.pkl"
 DP_PATH = DATA_DIR / "dp_solution.pkl"
+BASELINES_PATH = DATA_DIR / "baselines_verified.json"
 
 
 class DPState:
@@ -123,6 +126,52 @@ class DPState:
                 self.error = repr(e)
 
 
+class BaselineCheck:
+    """Exact evaluation of uniform random, safe random and pi* over all
+    144,508 starting boards (~1 min), cached to disk once computed."""
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.status = "idle"  # idle | running | ready | error
+        self.result = None
+        self.error = None
+        if BASELINES_PATH.exists():
+            try:
+                self.result = json.loads(BASELINES_PATH.read_text())
+                self.status = "ready"
+            except Exception:
+                pass
+
+    def summary(self):
+        with self.lock:
+            return {"status": self.status, "result": self.result, "error": self.error}
+
+    def start(self):
+        with self.lock:
+            if self.status in ("running", "ready") or dp_state.solution is None:
+                return False
+            self.status = "running"
+        threading.Thread(target=self._run, daemon=True).start()
+        return True
+
+    def _run(self):
+        try:
+            sol = dp_state.solution
+            t, H = sol.trans, sol.budget
+            res = {
+                "uniform_random": policy_eval.summarise(*policy_eval.evaluate(t, policy_eval.uniform_policy(t), H)),
+                "safe_random": policy_eval.summarise(*policy_eval.evaluate(t, policy_eval.safe_random_policy(t), H)),
+                "optimal": policy_eval.summarise(*policy_eval.evaluate(
+                    t, None, H, weights_for_h=lambda h: policy_eval.optimal_policy_weights(sol, h))),
+                "budget": H,
+            }
+            BASELINES_PATH.write_text(json.dumps(res, indent=1))
+            with self.lock:
+                self.result, self.status = res, "ready"
+        except Exception as e:
+            with self.lock:
+                self.status, self.error = "error", repr(e)
+
+
 class TrainingJob:
     def __init__(self, job_id, episodes, alpha, epsilon, q0, budget, seed=None, window=500):
         self.job_id = job_id
@@ -137,6 +186,8 @@ class TrainingJob:
         self.recent_returns = []
         self.recent_mates = []
         self.curve = []  # list of {episode, mean_return, mate_rate, qtable_size}
+        self.evaluations = []  # exact greedy-policy evaluations, see start_evaluation
+        self.eval_status = "idle"
         self._stop_flag = False
         self.started_at = time.time()
         self.finished_at = None
@@ -176,6 +227,7 @@ class TrainingJob:
                 if self.status == "running":
                     self.status = "done"
                 self.finished_at = time.time()
+            self.start_evaluation()  # no-op if the DP solution isn't loaded
         except Exception as e:
             with self.lock:
                 self.status = "error"
@@ -183,6 +235,38 @@ class TrainingJob:
 
     def stop(self):
         self._stop_flag = True
+
+    def start_evaluation(self):
+        """Exactly evaluate the CURRENT greedy policy (no exploration) on all
+        144,508 boards against pi*. Runs in the background (~20-30 s)."""
+        with self.lock:
+            if self.eval_status == "running" or dp_state.solution is None:
+                return False
+            self.eval_status = "running"
+        threading.Thread(target=self._run_evaluation, daemon=True).start()
+        return True
+
+    def _run_evaluation(self):
+        try:
+            sol = dp_state.solution
+            episodes = self.episodes_done
+            w, coverage = policy_eval.mc_greedy_policy(sol.trans, sol.space, self.agent)
+            s = policy_eval.summarise(*policy_eval.evaluate(sol.trans, w, self.budget))
+            v_star = float(sol.V[min(self.budget, sol.budget)].mean())
+            s.update(
+                episodes=episodes,
+                coverage=coverage,
+                agreement=policy_eval.agreement_with_optimal(sol, w, min(self.budget, sol.budget)),
+                v_star=v_star,
+                pct_of_optimal=100.0 * s["mean_return"] / v_star,
+            )
+            with self.lock:
+                self.evaluations.append(s)
+                self.eval_status = "idle"
+        except Exception as e:
+            with self.lock:
+                self.eval_status = "error"
+                self.error = repr(e)
 
     def summary(self):
         with self.lock:
@@ -193,6 +277,10 @@ class TrainingJob:
                 "episodes_target": self.episodes_target,
                 "qtable_size": self.agent.q_table_size(),
                 "curve": list(self.curve),
+                "evaluations": list(self.evaluations),
+                "eval_status": self.eval_status,
+                "params": {"alpha": self.agent.alpha, "epsilon": self.agent.epsilon,
+                           "q0": self.agent.q0, "budget": self.budget},
                 "error": self.error,
             }
 
@@ -213,6 +301,13 @@ class JobRegistry:
         with self.lock:
             return self.jobs.get(job_id)
 
+    def list(self):
+        with self.lock:
+            jobs = list(self.jobs.values())
+        return [{"job_id": j.job_id, "status": j.status, "episodes_done": j.episodes_done,
+                 "episodes_target": j.episodes_target, "started_at": j.started_at} for j in jobs]
+
 
 dp_state = DPState()
 job_registry = JobRegistry()
+baseline_check = BaselineCheck()

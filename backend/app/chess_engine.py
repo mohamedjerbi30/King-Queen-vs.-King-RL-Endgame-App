@@ -248,10 +248,10 @@ def random_start_position(rng: random.Random = None, budget: int = DEFAULT_BUDGE
         wk, wq, bk = rng.randrange(64), rng.randrange(64), rng.randrange(64)
         if not is_valid_placement(wk, wq, bk):
             continue
-        # A legal starting position: Black is not already in check, and has at
-        # least one legal reply available later (i.e. not already stalemated).
+        # A legal White-to-move position: Black is not in check. This is
+        # exactly the 144,508-board set the DP solves and the report samples
+        # starts from uniformly (Black having no move yet is fine: it is
+        # White's turn, and White's move decides mate / stalemate / play on).
         if black_in_check(wk, wq, bk):
-            continue
-        if not black_king_moves(wk, wq, bk):
             continue
         return Position(wk, wq, bk, budget)

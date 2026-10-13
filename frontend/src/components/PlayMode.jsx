@@ -1,5 +1,6 @@
 import { useEffect, useState, useCallback } from "react";
 import ChessBoard from "./ChessBoard.jsx";
+import JobPicker from "./JobPicker.jsx";
 import { api } from "../api.js";
 
 export default function PlayMode() {
@@ -18,6 +19,9 @@ export default function PlayMode() {
   const [suggestion, setSuggestion] = useState(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
+  const [finalBoard, setFinalBoard] = useState(null);
+  const [startBudget, setStartBudget] = useState(null);
+  const [ret, setRet] = useState(0); // discounted return G_0 accumulated so far
 
   useEffect(() => {
     api.dpStatus().then((s) => setDpReady(s.status === "ready")).catch(() => {});
@@ -35,6 +39,9 @@ export default function PlayMode() {
       setSelectedPiece(null);
       setLastMove(null);
       setOutcome(null);
+      setFinalBoard(null);
+      setStartBudget(res.position.moves_left);
+      setRet(0);
       setLog([`New game — White to move (budget ${res.position.moves_left}).`]);
       setSuggestion(null);
     } catch (e) {
@@ -78,9 +85,19 @@ export default function PlayMode() {
       setSelectedPiece(null);
       setSuggestion(null);
 
+      const t = (startBudget ?? position.moves_left) - position.moves_left;
+      setRet((g) => g + Math.pow(0.99, t) * res.reward);
       if (res.done) {
         setOutcome(res.outcome);
         setLog((l) => [...l, `Game over: ${res.outcome} (reward ${res.reward}).`]);
+        // Keep the final board on screen (Black does not move after a terminal White move).
+        const wk = piece === "K" ? dest : position.wk;
+        const wq = piece === "Q" ? dest : position.wq;
+        if (res.outcome === "queen_captured") {
+          setFinalBoard({ wk, wq: -1, bk: wq }); // Black king now stands on the queen's square
+        } else {
+          setFinalBoard({ wk, wq, bk: position.bk });
+        }
         setPosition(null);
         setLegalMoves([]);
       } else {
@@ -143,14 +160,20 @@ export default function PlayMode() {
             onSquareClick={handleSquareClick}
             lastMove={lastMove}
           />
+        ) : finalBoard ? (
+          <ChessBoard wk={finalBoard.wk} wq={finalBoard.wq} bk={finalBoard.bk} lastMove={lastMove} />
         ) : (
-          <div style={{ padding: 60, color: "var(--muted)" }}>
-            {outcome ? `Game over — ${outcome}` : "Loading…"}
-          </div>
+          <div style={{ padding: 60, color: "var(--muted)" }}>Loading…</div>
         )}
         {position && (
           <div style={{ fontSize: 13, color: "var(--muted)" }}>
             Moves left: <strong style={{ color: "var(--navy)" }}>{position.moves_left}</strong> · White to move
+            · return so far G = <strong style={{ color: "var(--navy)" }}>{ret.toFixed(4)}</strong>
+          </div>
+        )}
+        {outcome && (
+          <div className={`badge ${outcome === "checkmate" ? "success" : "fail"}`} style={{ fontSize: 14 }}>
+            {outcome === "checkmate" ? "Checkmate — success" : `Failure — ${outcome.replace("_", " ")}`} · final return G = {ret.toFixed(4)}
           </div>
         )}
         {error && <div style={{ color: "var(--rust)", fontSize: 13 }}>{error}</div>}
@@ -188,12 +211,12 @@ export default function PlayMode() {
           {source === "dp" && !dpReady && (
             <div style={{ fontSize: 12, color: "var(--rust)" }}>DP solution not cached yet — see Results Dashboard / Explore tab to solve it.</div>
           )}
-          {source === "mc" && (
-            <div className="field-row">
-              <span>Job id</span>
-              <input type="text" value={jobId} onChange={(e) => setJobId(e.target.value)} placeholder="from Live Training" style={{ width: 120 }} />
-            </div>
-          )}
+          {source === "mc" && <JobPicker value={jobId} onChange={setJobId} />}
+          <div style={{ fontSize: 12, color: "var(--muted)", marginTop: 6 }}>
+            {source === "dp"
+              ? "Optimal (DP): reads the move from π*, computed exactly by backward induction over all 144,508 boards and every remaining budget h. It cannot be beaten on average."
+              : "Trained (MC): reads the greedy move from a Q-table learned only by playing games (no model). Its quality depends on how many episodes the job has run — a few thousand episodes is still close to random."}
+          </div>
           {controller === "human" && (
             <button className="secondary" style={{ width: "100%", marginTop: 6 }} onClick={() => requestAgentMove(false)} disabled={busy || !position}>
               Suggest a move

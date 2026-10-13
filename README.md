@@ -77,19 +77,29 @@ that directory with any static file server, pointed at a reachable Flask API
    White while you watch. Black's king always replies automatically,
    following the engine's rules.
 2. **Explore Q-table** — type in any legal board (king/queen/king squares,
-   moves remaining) and see every candidate move's value, from either the
-   exact DP solution or a Monte Carlo training job's learned Q-table, with
-   the best move starred.
+   moves remaining), or click squares to place pieces, and see every legal
+   move's value drawn on the board: exact q\*(s, a) from DP (all tied optimal
+   moves starred, mate/stalemate moves flagged), or a training job's learned
+   Q(s, a) with its visit count (untried moves still show Q0).
 3. **Live Training** — start a bounded Monte Carlo training run (100 to
-   500,000 episodes) and watch the mean return and mate rate climb in real
-   time on a live chart. This is a small-scale, interactive demo, not a
-   reproduction of the full 100M-episode run — use the returned job id in
-   Play or Explore mode to try out what it has learned.
-4. **Results Dashboard** — the project's official, previously-measured
-   numbers: state-space size, the exact optimal value v\*, and the final
-   Monte Carlo agent's performance (100M episodes × 3 seeds) compared against
-   random baselines. This server's own from-scratch DP solver reproduces
-   v\* = 0.927126 exactly, confirming the two implementations agree.
+   500,000 episodes), with a "Report settings" and a "Fast demo"
+   (α = 0.1, Q0 = 0) preset. The chart shows the noisy ε-greedy training
+   return, plus exact evaluations of the greedy policy over all 144,508
+   boards (mean return, % of v\*, mate rate, moves to mate, agreement with
+   π\*), run on demand and automatically when training ends. Jobs then show
+   up in the job picker of Play and Explore.
+4. **Results Dashboard** — the report's numbers, with the baselines and π\*
+   re-evaluated exactly on the server (uniform random, "safe" random, π\*),
+   the real learning curves measured with this app, and a DP-vs-MC summary.
+
+## Exact policy evaluation
+
+`backend/app/policy_eval.py` evaluates any White policy exactly on the DP
+transition table (same backward recursion as the solver, but averaging over
+the policy instead of maximising) and returns the mean return, mate
+probability and expected moves to mate. `python backend/test_policy_eval.py`
+uses it to check the report's figures: uniform random 1.2% / −0.979, safe
+random 15.9% / −0.729, π\* 100% / 0.927126 / 4.70 moves.
 
 ## Notes
 

@@ -20,6 +20,7 @@ export default function ChessBoard({
   selectedPiece, // 'K' | 'Q' | null
   onSquareClick,
   lastMove, // {from, to} squares to highlight, optional
+  squareLabels = {}, // {sq: {text, color}} small value tags drawn on squares (Explore mode)
   size = 420,
 }) {
   const cell = size / 8;
@@ -79,7 +80,27 @@ export default function ChessBoard({
               {GLYPH[piece]}
             </span>
           )}
-          {isDot && !piece && (
+          {squareLabels[sq] && (
+            <div
+              style={{
+                position: "absolute",
+                inset: 4,
+                borderRadius: 4,
+                background: squareLabels[sq].color,
+                color: "#FFFFFF",
+                fontSize: cell * 0.2,
+                fontWeight: 700,
+                display: "flex",
+                alignItems: "flex-end",
+                justifyContent: "center",
+                paddingBottom: 2,
+                opacity: piece ? 0.85 : 1,
+              }}
+            >
+              {squareLabels[sq].text}
+            </div>
+          )}
+          {isDot && !piece && !squareLabels[sq] && (
             <div
               style={{
                 width: cell * 0.28,

@@ -7,6 +7,7 @@ __pycache__/
 # Large generated data files (state space, transitions ~320MB, dp solutions)
 backend/app/data/*.pkl
 backend/app/data/*.npz
+backend/app/data/*.json
 !backend/app/data/.gitkeep
 
 # Node / Frontend
