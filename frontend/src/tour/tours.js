@@ -37,6 +37,8 @@ export const TOURS = {
     { target: "@tabs", title: "Use your agent", body: "Your trained agent is now available in Play (Trained) and in Explore (Learned / Compare)." },
   ],
   dashboard: [
+    { target: "dash-session", title: "Your results", body: "Everything you did in this browser: games finished in Play (by you, the optimal agent or a trained agent) and every agent you trained and tested in Live Training. It is empty until you play or train." },
+    { target: "dash-reference", title: "Reference numbers", body: "Below this line are the project report's numbers — not your session. They are the benchmark your games and agents can be compared with." },
     { target: "dash-mate", title: "Games won", body: "How often each policy checkmates within 40 moves, from a random start: random play 1.2%, 'safe' random 15.9%, the trained Monte Carlo agent >99.99%, the optimal agent 100%." },
     { target: "dash-return", title: "Average result", body: "The mean return (between −1 and +1). It also rewards speed: the optimal agent scores 0.927 because it mates in 4.7 moves on average." },
     { target: "dash-check", title: "Checking the report", body: "The server recomputes these numbers exactly and puts ✓ when they match the presentation." },

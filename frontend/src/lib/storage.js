@@ -55,6 +55,7 @@ export function usePersistentState(key, initial) {
   const set = useCallback(
     (next) => {
       const v = typeof next === "function" ? next(ref.current) : next;
+      if (Object.is(v, ref.current)) return;
       ref.current = v;
       setValue(v);
       writeStored(key, v);

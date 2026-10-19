@@ -5,6 +5,7 @@ import {
 } from "recharts";
 import { api } from "../api.js";
 import { Badge, Button, Callout, Card, ErrorText, StatRow } from "../ui/index.jsx";
+import SessionResults from "./SessionResults.jsx";
 
 const COLORS = { navy: "#162A4B", gold: "#CC8A2C", rust: "#B1503E", sage: "#3C6B5C" };
 const BAR_COLORS = [COLORS.rust, COLORS.gold, COLORS.sage, COLORS.navy];
@@ -38,7 +39,7 @@ function PolicyBars({ data, domain, unit, format }) {
   );
 }
 
-export default function DashboardMode() {
+export default function DashboardMode({ active, onNavigate }) {
   const [results, setResults] = useState(null);
   const [dpStatus, setDpStatus] = useState(null);
   const [baselines, setBaselines] = useState(null);
@@ -47,10 +48,15 @@ export default function DashboardMode() {
 
   useEffect(() => {
     api.results().then(setResults).catch((e) => setError(e.message));
-    api.dpStatus().then(setDpStatus).catch(() => {});
-    api.baselines().then(setBaselines).catch(() => {});
     return () => clearInterval(pollRef.current);
   }, []);
+
+  // Ask the server again every time the page is opened (its state can change).
+  useEffect(() => {
+    if (!active) return;
+    api.dpStatus().then(setDpStatus).catch(() => setDpStatus(null));
+    api.baselines().then(setBaselines).catch(() => {});
+  }, [active]);
 
   async function verify() {
     try {
@@ -92,8 +98,23 @@ export default function DashboardMode() {
     { name: "Optimal π*", def: "best move from the exact DP solution", r: base.optimal, l: live?.optimal, moves: dp_exact.mean_moves_to_mate },
   ];
 
+  const dpMissing = dpStatus && dpStatus.status !== "ready";
+
   return (
     <div className="dash">
+      <SessionResults onNavigate={onNavigate} />
+
+      <div className="reference-head" data-tour="dash-reference">
+        <div>
+          <h2>Reference — the project report</h2>
+          <p>
+            These are <strong>not</strong> results from your session: they are the presentation's numbers (exact DP,
+            baselines, and a Monte Carlo agent trained offline for 100 million games × 3 seeds), shown for comparison.
+          </p>
+        </div>
+        <Badge tone="neutral">reference</Badge>
+      </div>
+
       <div className="grid-2">
         <Card title="Games won (mate rate)" tour="dash-mate">
           <PolicyBars data={mateRateData} domain={[0, 100]} unit="%" format={(v) => `${v.toFixed(1)}%`} />
@@ -128,6 +149,12 @@ export default function DashboardMode() {
             </tbody>
           </table>
         </div>
+        {dpMissing && (
+          <Callout tone="warn">
+            This server has no exact DP solution loaded (status: {dpStatus.status}), so it cannot re-check these numbers.
+            Run the backend locally (<code>python run.py</code>) — a hosted serverless version cannot build or store it.
+          </Callout>
+        )}
         <div className="field-hint">
           "Checked" = recomputed exactly by this server on all 144,508 starting positions (no random sampling): the DP
           recursion, averaging over the policy's moves instead of taking the best one.

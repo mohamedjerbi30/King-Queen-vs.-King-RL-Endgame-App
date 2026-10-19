@@ -1,14 +1,17 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import ChessBoard from "./ChessBoard.jsx";
+import ResultBanner from "./ResultBanner.jsx";
 import JobPicker, { useJobs, useSelectedJob } from "./JobPicker.jsx";
 import { api } from "../api.js";
 import { usePersistentState } from "../lib/storage.js";
 import { gameRecord, moveLabel, sqName, valueMeaning, valueTag } from "../lib/chess.js";
+import { recordGame } from "../lib/history.js";
 import { Badge, Button, Callout, Card, ErrorText, Field, NumberInput, Segmented, Select } from "../ui/index.jsx";
 
 const EMPTY_GAME = {
   position: null, legalMoves: [], moves: [], outcome: null, finalBoard: null,
   ret: 0, startBudget: 40, lastMove: null, blackMove: null,
+  humanMoved: false, agentSources: [], // who played this game (for the Results page)
 };
 
 const OUTCOME_TEXT = {
@@ -34,6 +37,8 @@ export default function PlayMode({ active }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
   const busyRef = useRef(false);
+  const [bannerHidden, setBannerHidden] = useState(false);
+  useEffect(() => setBannerHidden(false), [game.outcome]); // show it again for each finished game
 
   const pos = game.position;
   const mcAvailable = jobs.some((j) => j.job_id === jobId);
@@ -65,7 +70,7 @@ export default function PlayMode({ active }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const playMove = useCallback(async (piece, dest) => {
+  const playMove = useCallback(async (piece, dest, byAgent = false) => {
     if (!pos || busyRef.current) return false;
     busyRef.current = true;
     setBusy(true);
@@ -78,16 +83,20 @@ export default function PlayMode({ active }) {
       const wk = piece === "K" ? dest : pos.wk;
       const wq = piece === "Q" ? dest : pos.wq;
       const entry = { white: moveLabel(piece, dest) };
+      const humanMoved = game.humanMoved || !byAgent;
+      const prevSources = game.agentSources || [];
+      const agentSources = byAgent && !prevSources.includes(source) ? [...prevSources, source] : prevSources;
       if (res.done) {
         entry.result = res.outcome === "checkmate" ? "#" : `(${res.outcome.replace("_", " ")})`;
         if (res.outcome === "queen_captured") entry.black = `Kx${sqName(wq)}`;
         const finalBoard = res.outcome === "queen_captured" ? { wk, wq: -1, bk: wq } : { wk, wq, bk: pos.bk };
-        setGame({ ...game, position: null, legalMoves: [], moves: [...game.moves, entry], outcome: res.outcome,
+        recordGame({ who: humanMoved ? "you" : agentSources.length === 1 ? agentSources[0] : "mixed", outcome: res.outcome, moves: game.moves.length + 1, ret });
+        setGame({ ...game, humanMoved, agentSources, position: null, legalMoves: [], moves: [...game.moves, entry], outcome: res.outcome,
           finalBoard, ret, lastMove: { from, to: dest }, blackMove: res.outcome === "queen_captured" ? { from: pos.bk, to: wq } : null });
         setRunning(false);
       } else {
         entry.black = `K${res.black_reply}`;
-        setGame({ ...game, position: res.position, legalMoves: res.legal_moves, moves: [...game.moves, entry], ret,
+        setGame({ ...game, humanMoved, agentSources, position: res.position, legalMoves: res.legal_moves, moves: [...game.moves, entry], ret,
           lastMove: { from, to: dest }, blackMove: { from: pos.bk, to: res.position.bk } });
       }
       setSelected(null);
@@ -100,7 +109,7 @@ export default function PlayMode({ active }) {
       busyRef.current = false;
       setBusy(false);
     }
-  }, [pos, game, setGame]);
+  }, [pos, game, setGame, source]);
 
   const askAgent = useCallback(async () => {
     if (!pos) return null;
@@ -112,7 +121,7 @@ export default function PlayMode({ active }) {
   const agentStep = useCallback(async () => {
     try {
       const mv = await askAgent();
-      if (!mv || !(await playMove(mv.piece, mv.dest))) setRunning(false);
+      if (!mv || !(await playMove(mv.piece, mv.dest, true))) setRunning(false);
     } catch (e) {
       setError(e.message);
       setRunning(false); // never retry in a loop on errors
@@ -177,6 +186,17 @@ export default function PlayMode({ active }) {
           <span><i className="swatch dot" /> legal destination</span>
         </div>
         <ErrorText>{error}</ErrorText>
+        {game.outcome && !bannerHidden && (
+          <ResultBanner
+            outcome={game.outcome}
+            who={game.humanMoved ? "You" : (game.agentSources || []).length === 1
+              ? (game.agentSources[0] === "dp" ? "The optimal agent" : "The trained agent") : "The agents"}
+            moves={game.moves.length}
+            ret={game.ret}
+            actions={[{ label: "New game", onClick: startNewGame }]}
+            onDismiss={() => setBannerHidden(true)}
+          />
+        )}
       </Card>
 
       <div className="side">

@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+.venv/
+app/data/*.pkl
+app/data/*.npz
+app/data/*.json
+uv.lock

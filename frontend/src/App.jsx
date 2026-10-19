@@ -12,7 +12,7 @@ const MODES = [
   { key: "play", label: "Play", blurb: "Play the endgame yourself or watch an agent mate." },
   { key: "explore", label: "Explore values", blurb: "See how good every move is — the agent's Q-table." },
   { key: "train", label: "Live Training", blurb: "Train your own Monte Carlo agent and watch it learn." },
-  { key: "dashboard", label: "Results", blurb: "The project's results, checked exactly." },
+  { key: "dashboard", label: "Results", blurb: "Your own results first, then the project report's reference numbers." },
 ];
 
 export default function App() {
@@ -81,7 +81,7 @@ export default function App() {
         <div id="page-play" hidden={mode !== "play"}><PlayMode active={mode === "play"} /></div>
         <div id="page-explore" hidden={mode !== "explore"}><ExploreMode /></div>
         <div id="page-train" hidden={mode !== "train"}><TrainMode /></div>
-        <div id="page-dashboard" hidden={mode !== "dashboard"}><DashboardMode /></div>
+        <div id="page-dashboard" hidden={mode !== "dashboard"}><DashboardMode active={mode === "dashboard"} onNavigate={switchTo} /></div>
       </main>
 
       {tourOpen && (

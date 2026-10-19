@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import ChessBoard from "./ChessBoard.jsx";
+import ResultBanner from "./ResultBanner.jsx";
 import JobPicker, { useJobs, useSelectedJob } from "./JobPicker.jsx";
 import { api } from "../api.js";
 import { usePersistentState } from "../lib/storage.js";
@@ -59,6 +60,7 @@ export default function ExploreMode() {
   const [message, setMessage] = useState(null);
   const [error, setError] = useState(null);
   const [busy, setBusy] = useState(false);
+  const [ended, setEnded] = useState(null); // {outcome, moves} when a played move ends the game
 
   const wk = sqFromName(wkName), wq = sqFromName(wqName), bk = sqFromName(bkName);
   const posError = positionError(wk, wq, bk);
@@ -124,6 +126,7 @@ export default function ExploreMode() {
     setBkName(c);
     setH(40);
     setHistory([]);
+    setEnded(null);
     setLastMove(null);
     setBlackMove(null);
     setMessage(null);
@@ -139,6 +142,7 @@ export default function ExploreMode() {
       setHistory([...history, { wk: wkName, wq: wqName, bk: bkName, h }]);
       setLastMove({ from: piece === "K" ? wk : wq, to: dest });
       if (res.done) {
+        setEnded({ outcome: res.outcome, moves: history.length + 1 });
         setMessage(`${moveLabel(piece, dest)} ended the game: ${res.outcome.replace("_", " ")} (reward ${res.reward}). Use Undo or load another position.`);
         if (piece === "K") setWkName(sqName(dest));
         else setWqName(sqName(dest));
@@ -160,6 +164,7 @@ export default function ExploreMode() {
   function undo() {
     const prev = history[history.length - 1];
     if (!prev) return;
+    setEnded(null);
     setHistory(history.slice(0, -1));
     setWkName(prev.wk);
     setWqName(prev.wq);
@@ -230,6 +235,18 @@ export default function ExploreMode() {
         </div>
         {message && <div className="message">{message}</div>}
         <ErrorText>{error}</ErrorText>
+        {ended && (
+          <ResultBanner
+            outcome={ended.outcome}
+            who="You"
+            moves={ended.moves}
+            actions={[
+              { label: "↶ Undo the last move", onClick: undo },
+              { label: "Load the first example", variant: "secondary", onClick: () => loadExample("c6,e4,a8") },
+            ]}
+            onDismiss={() => setEnded(null)}
+          />
+        )}
 
         <div className="legend" data-tour="explore-legend">
           {(source === "mc" ? ["best", "close", "slower", "unknown"] : ["best", "close", "slower", "blunder"]).map((g) => (

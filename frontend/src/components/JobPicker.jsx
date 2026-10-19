@@ -1,48 +1,30 @@
-import { useCallback, useEffect, useState } from "react";
-import { api } from "../api.js";
+import { useEffect } from "react";
+import { useLiveJobs } from "../lib/live.js";
 import { usePersistentState } from "../lib/storage.js";
-import { Button, Field, Select } from "../ui/index.jsx";
+import { Field, Select } from "../ui/index.jsx";
 
 /** The selected Monte Carlo job, shared by every page and kept in localStorage. */
 export function useSelectedJob() {
   return usePersistentState("selectedJob", "");
 }
 
-/** Jobs this server knows about, newest first. Jobs live in server memory, so
- *  a stored job id becomes stale after a server restart — callers check it. */
+/** Trained agents this server knows about, pushed live over a WebSocket.
+ *  Jobs live in server memory, so a stored id becomes stale after a restart. */
 export function useJobs() {
-  const [jobs, setJobs] = useState([]);
-  const [loaded, setLoaded] = useState(false);
-  const refresh = useCallback(async () => {
-    try {
-      const res = await api.trainJobs();
-      setJobs([...res.jobs].sort((a, b) => b.started_at - a.started_at));
-    } catch {
-      setJobs([]);
-    }
-    setLoaded(true);
-  }, []);
-  useEffect(() => {
-    refresh();
-    const t = setInterval(refresh, 5000);
-    return () => clearInterval(t);
-  }, [refresh]);
-  return { jobs, loaded, refresh };
+  return useLiveJobs();
 }
 
 export default function JobPicker({ tour }) {
   const [jobId, setJobId] = useSelectedJob();
-  const { jobs, loaded, refresh } = useJobs();
+  const { jobs, loaded, transport } = useJobs();
 
   // Keep the selection valid: drop ids the server no longer has, pick the newest otherwise.
+  // Runs only when the server's list changes, so a job that was just started
+  // (and selected) is not replaced before the list includes it.
   useEffect(() => {
     if (!loaded) return;
-    if (jobs.length === 0) {
-      if (jobId) setJobId("");
-    } else if (!jobs.some((j) => j.job_id === jobId)) {
-      setJobId(jobs[0].job_id);
-    }
-  }, [loaded, jobs, jobId, setJobId]);
+    setJobId((cur) => (jobs.length === 0 ? "" : jobs.some((j) => j.job_id === cur) ? cur : jobs[0].job_id));
+  }, [loaded, jobs, setJobId]);
 
   const options = jobs.length
     ? jobs.map((j) => ({
@@ -60,7 +42,7 @@ export default function JobPicker({ tour }) {
     >
       <span className="inline-controls">
         <Select value={jobId} onChange={setJobId} options={options} disabled={!jobs.length} />
-        <Button variant="secondary" size="sm" onClick={refresh} title="Refresh the list">↻</Button>
+        <span className={`live-dot live-${transport}`} title={transport === "live" ? "Updated live (WebSocket)" : transport === "polling" ? "Updated every few seconds (no WebSocket)" : "Server unreachable"} />
       </span>
     </Field>
   );

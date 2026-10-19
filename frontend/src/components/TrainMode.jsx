@@ -1,10 +1,12 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import {
   ResponsiveContainer, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ReferenceLine,
 } from "recharts";
 import { api } from "../api.js";
 import { usePersistentState } from "../lib/storage.js";
 import { useSelectedJob } from "./JobPicker.jsx";
+import { useJobStream } from "../lib/live.js";
+import { recordRun } from "../lib/history.js";
 import { Badge, Button, Callout, Card, ErrorText, Field, NumberInput, ProgressBar, Segmented, StatRow } from "../ui/index.jsx";
 
 const V_STAR = 0.927126;
@@ -21,9 +23,9 @@ export default function TrainMode() {
   const [preset, setPreset] = usePersistentState("train.preset", "official");
   const [params, setParams] = usePersistentState("train.params", { episodes: 200000, alpha: 0.01, epsilon: 0.05, q0: 1.0, budget: 40 });
   const [jobId, setJobId] = useSelectedJob();
-  const [job, setJob] = useState(null);
+  const [reconnect, setReconnect] = useState(0);
+  const { job, transport, missing } = useJobStream(jobId, reconnect);
   const [error, setError] = useState(null);
-  const pollRef = useRef(null);
 
   const setParam = (k) => (v) => {
     setParams({ ...params, [k]: v });
@@ -36,30 +38,6 @@ export default function TrainMode() {
     const p = PRESETS[key];
     setParams({ ...params, alpha: p.alpha, epsilon: p.epsilon, q0: p.q0, episodes: p.episodes });
   }
-
-  const poll = useCallback((id) => {
-    clearInterval(pollRef.current);
-    const tick = async () => {
-      try {
-        const s = await api.trainStatus(id);
-        setJob(s);
-        if (s.status !== "running" && s.eval_status !== "running") clearInterval(pollRef.current);
-      } catch {
-        // The server no longer knows this job (e.g. it was restarted).
-        clearInterval(pollRef.current);
-        setJob(null);
-      }
-    };
-    tick();
-    pollRef.current = setInterval(tick, 800);
-  }, []);
-
-  // Re-attach to the selected job whenever it changes (also after a reload or tab switch).
-  useEffect(() => {
-    if (jobId) poll(jobId);
-    else setJob(null);
-    return () => clearInterval(pollRef.current);
-  }, [jobId, poll]);
 
   async function start() {
     setError(null);
@@ -79,12 +57,19 @@ export default function TrainMode() {
     if (!job) return;
     setError(null);
     try {
-      setJob(await api.trainEvaluate(job.job_id));
-      poll(job.job_id);
+      await api.trainEvaluate(job.job_id);
+      setReconnect((n) => n + 1); // reopen the live stream to receive the result
     } catch (e) {
       setError(e.message);
     }
   }
+
+  // Keep every exact test result in the browser for the Results page.
+  const lastEvalKey = job?.evaluations?.length ? `${job.job_id}:${job.evaluations.length}` : null;
+  useEffect(() => {
+    if (lastEvalKey) recordRun(job, job.evaluations[job.evaluations.length - 1]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [lastEvalKey]);
 
   const running = job?.status === "running";
   const curve = job?.curve ?? [];
@@ -157,11 +142,18 @@ export default function TrainMode() {
           <ErrorText>{error}</ErrorText>
         </Card>
 
+        {missing && (
+          <Callout tone="warn">
+            The selected run no longer exists on the server (it was probably restarted). Start a new training run.
+          </Callout>
+        )}
         {job && (
           <Card title="This run" tone="soft" tour="train-status">
             <div className="board-status">
               <Badge tone={running ? "pending" : job.status === "done" ? "success" : "neutral"}>{job.status}</Badge>
               <span className="muted">agent {job.job_id.slice(0, 6)}</span>
+              <span className="live-label"><i className={`live-dot live-${transport}`} />
+                {transport === "live" ? "live (WebSocket)" : transport === "polling" ? "updating every second" : "up to date"}</span>
             </div>
             <ProgressBar value={job.episodes_done} max={job.episodes_target} label="training progress" />
             <StatRow label="Episodes" value={`${job.episodes_done.toLocaleString()} / ${job.episodes_target.toLocaleString()}${eta !== null ? ` · ~${eta}s left` : ""}`} />

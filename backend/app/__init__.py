@@ -15,6 +15,9 @@ def create_app():
     from .routes import bp
     app.register_blueprint(bp)
 
+    from .ws import sock
+    sock.init_app(app)
+
     if os.path.exists(dist_dir):
         @app.route("/", defaults={"path": ""})
         @app.route("/<path:path>")

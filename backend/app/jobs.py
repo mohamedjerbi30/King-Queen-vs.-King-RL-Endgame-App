@@ -196,7 +196,7 @@ class TrainingJob:
 
     def _run(self):
         try:
-            checkpoint_every = max(1, self.episodes_target // 100)
+            checkpoint_every = max(25, self.episodes_target // 400)  # ~400 curve points
             for i in range(1, self.episodes_target + 1):
                 if self._stop_flag:
                     with self.lock:
@@ -219,15 +219,13 @@ class TrainingJob:
                             "mate_rate": mrate,
                             "qtable_size": self.agent.q_table_size(),
                         })
-            else:
-                with self.lock:
-                    if self.status == "running":
-                        self.status = "done"
+            # Start the exact test BEFORE flagging the run as finished, so a
+            # listener never sees "finished and nothing pending" in between.
+            self.start_evaluation()  # no-op if the DP solution isn't loaded
             with self.lock:
                 if self.status == "running":
                     self.status = "done"
                 self.finished_at = time.time()
-            self.start_evaluation()  # no-op if the DP solution isn't loaded
         except Exception as e:
             with self.lock:
                 self.status = "error"

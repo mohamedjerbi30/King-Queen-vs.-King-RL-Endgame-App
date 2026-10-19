@@ -92,8 +92,14 @@ that directory with any static file server, pointed at a reachable Flask API
    re-evaluated exactly on the server (uniform random, "safe" random, π\*),
    the real learning curves measured with this app, and a DP-vs-MC summary.
 
+## Deployment
+
+The backend must run as one long-lived process (training jobs and WebSocket streams live in its memory), so it cannot run on Vercel's serverless functions. See [DEPLOY.md](DEPLOY.md): backend on Render (Dockerfile + `render.yaml`), frontend on Vercel with `VITE_API_BASE`.
+
 ## Interface notes
 
+- **Live updates:** training progress and the list of trained agents are pushed over WebSockets (`/api/ws/train/<id>`, `/api/ws/jobs`), with an automatic polling fallback.
+- **End-of-game banner:** every finished game (Play or Explore) shows the result, what it means and the next actions.
 - **Guide:** every page opens a step-by-step guide on its first visit (it spotlights each control and explains it); replay it with **? Guide**, or tick "show every time".
 - **Saved in your browser:** games, positions, settings, the selected trained agent and guide progress are stored in `localStorage` (keys prefixed `kqk.`). **Reset saved data** in the header clears them.
 - **Reusable UI components** live in `frontend/src/ui/` (Button, Select, Field, Segmented, Card…); helpers in `frontend/src/lib/` (storage, notation, "mate in N"); the guide in `frontend/src/tour/`.
