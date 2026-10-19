@@ -30,3 +30,5 @@ Thumbs.db
 .gemini/
 PRESENTATION_UPDATE_FOR_CLAUDE.md
 rapport/
+*.zip
+project-guide.txt

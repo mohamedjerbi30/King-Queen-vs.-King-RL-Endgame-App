@@ -26,8 +26,10 @@ INSTANCE_ID = uuid.uuid4().hex[:8]  # identifies this process in error messages
 # memory-hungry ones — server training and exact policy tests (~1 GB peaks).
 # Agents are then trained in the browser instead.
 LOW_MEMORY = os.environ.get("LOW_MEMORY", "").lower() in ("1", "true", "yes")
-SERVER_TRAINING = not (SERVERLESS or LOW_MEMORY)
-LOW_MEMORY_MSG = "Server training and exact tests are disabled on this low-memory server — train in the browser instead."
+# Training always runs in the browser (Web Worker): server-side training is
+# disabled everywhere — on a 512 MB instance it exceeded the memory limit.
+SERVER_TRAINING = False
+LOW_MEMORY_MSG = "Server training is disabled — agents are trained in the browser (Live Training)."
 
 UNKNOWN_JOB = (
     "This trained agent does not exist on this server instance. The server was "

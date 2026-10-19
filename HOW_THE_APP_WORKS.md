@@ -86,9 +86,9 @@ That is the whole agent: **a lookup in a precomputed table**. No search and no r
 
 ### 1.3 The trained agents (MC and TD)
 
-**Where they live.** You create one with **Start training** in Live Training. By default it trains **in your browser** (a Web Worker) and is saved there (IndexedDB), so it survives reloads and works on the hosted site. With a local or long-running server you can also train on the server (**Run on: Server**); those agents live in the server's memory and disappear when it restarts.
+**Where they live.** You create one with **Start training** in Live Training. It always trains **in your browser** (a Web Worker) and is saved there (IndexedDB), so it survives reloads and works on the hosted site. Server-side training was removed: on the free 512 MB Render instance it exceeded the memory limit.
 
-**The algorithm is the report's** ([engine.js](frontend/src/lib/engine.js), and [tabular.py](backend/app/tabular.py) on the server):
+**The algorithm is the report's** ([engine.js](frontend/src/lib/engine.js)):
 
 - **Five methods:** MC (mean, 1/N), MC (constant α), SARSA, Expected SARSA, Q-learning.
 - **State:** board **and moves left h**. The Q-table key is `(h − 1) × 499,496 + shared(board, move)`. The 8 board symmetries are shared; the deadline never is. That makes 19,979,840 entries.
@@ -182,7 +182,7 @@ What "exactly recomputed" means: the DP's backward calculation, but **averaging 
 Choose a **method** and a **budget** (Quick demo = 2 M decisions, a few seconds; Report budget = 20 M, about a minute), then **Start training**. The chart shows:
 
 - **Line:** the average return of the last 500 training episodes. It is noisy, because the agent explores and episodes start with a random h.
-- **Green dots:** tests of the greedy policy from h = 40, every 10 % of the run. In the browser they use 5,000 fixed games (an estimate, ±0.01); on the server, an exact evaluation on all 144,508 boards.
+- **Green dots:** tests of the greedy policy from h = 40, every 10 % of the run. They use 5,000 fixed games (an estimate, ±0.01).
 - **Dotted line:** the report's result for this method at 20 M decisions, for comparison.
 
 Early in training, every method is still poor. The report observes the same thing at 1 and 5 million decisions.

@@ -85,8 +85,8 @@ that directory with any static file server, pointed at a reachable Flask API
 3. **Live Training** — train any of the report's five learners (MC mean, MC
    constant, SARSA, Expected SARSA, Q-learning) with the report's protocol and
    a budget in decisions (2 M quick demo, or the report's 20 M in about a
-   minute). Training runs in the browser by default; on a long-running server
-   it can also run there, with exact tests on all 144,508 boards.
+   minute). Training always runs in the browser (Web Worker); agents are saved
+   in IndexedDB.
 4. **Results** — your own games and agents, then the report's reference
    numbers: the baselines and π\* re-evaluated exactly on the server, and the
    final MC/TD comparison (20 M decisions × 3 seeds).

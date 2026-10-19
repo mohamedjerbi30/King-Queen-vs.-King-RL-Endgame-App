@@ -2,12 +2,9 @@ import { useEffect, useState } from "react";
 import {
   ResponsiveContainer, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ReferenceLine,
 } from "recharts";
-import { api } from "../api.js";
 import { usePersistentState } from "../lib/storage.js";
 import { useSelectedJob } from "./JobPicker.jsx";
-import { useJobStream } from "../lib/live.js";
 import { recordRun } from "../lib/history.js";
-import { useServerInfo } from "../lib/server.js";
 import { parseAgentId } from "../lib/agents.js";
 import { METHODS, epsilonAt } from "../lib/engine.js";
 import { startBrowserTraining, stopBrowserTraining, testBrowserAgent, useBrowserJob } from "../lib/browserAgents.js";
@@ -33,56 +30,39 @@ const fmtM = (n) => (n >= 1e6 ? `${(n / 1e6).toFixed(n % 1e6 ? 1 : 0)}M` : n >= 
 
 export default function TrainMode() {
   const [params, setParams] = usePersistentState("train.config", { method: "qlearning", decisions: 2_000_000, alpha: 0.1, q0: 0 });
-  const [runOn, setRunOn] = usePersistentState("train.runOn", "browser");
   const [jobId, setJobId] = useSelectedJob();
-  const [reconnect, setReconnect] = useState(0);
   const [testing, setTesting] = useState(false);
   const [error, setError] = useState(null);
-  const server = useServerInfo();
-  const serverUsable = !!server?.reachable && !!server.serverTraining;
-  const where = runOn === "server" && serverUsable ? "server" : "browser";
-  const maxDecisions = where === "browser" ? 20_000_000 : 2_000_000;
+  const maxDecisions = 20_000_000;
 
-  // The selected agent may have been trained in this browser or on the server.
+  // Training always runs in this browser (Web Worker); agents are saved in IndexedDB.
   const sel = parseAgentId(jobId);
-  const serverStream = useJobStream(sel?.kind === "server" ? sel.id : null, reconnect);
-  const browserJob = useBrowserJob(sel?.kind === "browser" ? sel.id : null);
-  const job = sel?.kind === "browser" ? browserJob : serverStream.job;
-  const inBrowser = sel?.kind === "browser";
-  const transport = inBrowser ? (job?.status === "running" ? "live" : "idle") : serverStream.transport;
-  const missing = !inBrowser && serverStream.missing;
-  const jobMethod = job?.params?.method ?? job?.method;
+  const job = useBrowserJob(sel?.kind === "browser" ? sel.id : null);
+  const transport = job?.status === "running" ? "live" : "idle";
+  const jobMethod = job?.params?.method;
 
   const set = (k) => (v) => setParams({ ...params, [k]: v });
 
-  async function start() {
+  function start() {
     setError(null);
     const p = { ...params, decisions: Math.min(Math.max(10_000, Number(params.decisions) || 10_000), maxDecisions) };
     try {
-      if (where === "browser") setJobId(`b:${startBrowserTraining(p)}`);
-      else setJobId(`s:${(await api.trainStart(p)).job_id}`);
+      setJobId(`b:${startBrowserTraining(p)}`);
     } catch (e) {
       setError(e.message);
     }
   }
 
-  async function stop() {
-    if (!job) return;
-    if (inBrowser) stopBrowserTraining(sel.id);
-    else await api.trainStop(sel.id).catch((e) => setError(e.message));
+  function stop() {
+    if (job) stopBrowserTraining(sel.id);
   }
 
   async function evaluate() {
     if (!job) return;
     setError(null);
     try {
-      if (inBrowser) {
-        setTesting(true);
-        await testBrowserAgent(sel.id);
-      } else {
-        await api.trainEvaluate(sel.id);
-        setReconnect((n) => n + 1); // reopen the live stream to receive the result
-      }
+      setTesting(true);
+      await testBrowserAgent(sel.id);
     } catch (e) {
       setError(e.message);
     } finally {
@@ -129,7 +109,7 @@ export default function TrainMode() {
               {ref && <ReferenceLine y={ref.ret} stroke="#3C6B5C" strokeDasharray="2 3"
                 label={{ value: `report @20M: ${ref.ret}`, fontSize: 11, fill: "#3C6B5C", position: "insideBottomRight" }} />}
               <Line type="monotone" dataKey="behaviour" name="Training episodes (exploring, random h)" stroke="#162A4B" dot={false} strokeWidth={2} connectNulls isAnimationActive={false} />
-              <Line type="monotone" dataKey="greedy" name={inBrowser ? "Test of the greedy policy (5,000 games, h = 40)" : "Exact test of the greedy policy"} stroke="#3C6B5C" strokeWidth={0} dot={{ r: 5, fill: "#3C6B5C" }} isAnimationActive={false} />
+              <Line type="monotone" dataKey="greedy" name="Test of the greedy policy (5,000 games, h = 40)" stroke="#3C6B5C" strokeWidth={0} dot={{ r: 5, fill: "#3C6B5C" }} isAnimationActive={false} />
             </LineChart>
           </ResponsiveContainer>
         ) : (
@@ -138,19 +118,13 @@ export default function TrainMode() {
         <Callout tone="info" tour="train-reading">
           <strong>Two measurements.</strong> The <strong>dark line</strong> averages the last 500 training episodes — noisy, since the
           agent explores and episodes start with a random remaining budget h. The <strong>green dots</strong> test the greedy
-          policy with no exploration from h = 40: in the browser on 5,000 fixed positions (an estimate, about ±0.01), on the server
-          exactly on all 144,508. The dotted line is the report's result for this method at 20 million decisions.
+          policy with no exploration from h = 40 on 5,000 fixed positions (an estimate, about ±0.01). The dotted line is the
+          report's result for this method at 20 million decisions.
         </Callout>
       </Card>
 
       <div className="side">
         <Card title="Settings" tone="soft" tour="train-settings">
-          <Field label="Run on" tour="train-where"
-            info="This browser: trains on your computer in the background (works everywhere, also on the hosted version); the agent is saved in this browser. Server: trains on the backend with exact tests, only with a local or long-running server.">
-            <Segmented value={where} onChange={setRunOn}
-              options={[{ value: "browser", label: "This browser" },
-                { value: "server", label: "Server", disabled: !serverUsable, title: serverUsable ? "" : server?.lowMemory ? "Disabled on this low-memory server — train in the browser" : "No long-running server available" }]} />
-          </Field>
           <Field label="Method" tour="train-method"
             info="The five learners compared in the report. MC waits for the end of the game; SARSA, Expected SARSA and Q-learning update after every move from an estimate of what follows (bootstrapping).">
             <Select value={params.method} onChange={set("method")}
@@ -180,32 +154,25 @@ export default function TrainMode() {
             <Button variant="secondary" onClick={stop} disabled={!running}>■ Stop</Button>
           </div>
           <div className="field-hint">
-            {where === "browser"
-              ? "Runs in this tab (about 400,000 decisions/s: 20M in about a minute). Keep the tab open; switching pages is fine."
-              : "Runs on the server, with exact tests on all 144,508 positions."}
+            Training runs in this browser tab (about 400,000 decisions/s: 20M in about a minute). Keep the tab open; switching pages is fine.
           </div>
           <ErrorText>{error}</ErrorText>
         </Card>
 
-        {missing && (
-          <Callout tone="warn">
-            The selected run no longer exists on the server (it was probably restarted). Start a new training run.
-          </Callout>
-        )}
         {job && (
           <Card title="This run" tone="soft" tour="train-status">
             <div className="board-status">
               <Badge tone={running ? "pending" : job.status === "done" ? "success" : "neutral"}>{job.status}</Badge>
-              <span className="muted">{METHODS[jobMethod] || jobMethod} · {inBrowser ? "browser" : "server"}</span>
+              <span className="muted">{METHODS[jobMethod] || jobMethod}</span>
               <span className="live-label"><i className={`live-dot live-${transport}`} />
-                {transport === "live" ? (inBrowser ? "live (in this tab)" : "live (WebSocket)") : transport === "polling" ? "updating every second" : "up to date"}</span>
+                {transport === "live" ? "live (in this tab)" : "up to date"}</span>
             </div>
             <ProgressBar value={job.decisions_done} max={job.decisions_target} label="training progress" />
             <StatRow label="Decisions" value={`${fmtM(job.decisions_done)} / ${fmtM(job.decisions_target)}${eta !== null ? ` · ~${eta}s left` : ""}`} />
             <StatRow label="Episodes" value={(job.episodes_done ?? 0).toLocaleString()} />
             <StatRow label="Current ε" value={(job.epsilon ?? epsilonAt(job.decisions_done)).toFixed(3)} info="Exploration rate after this many decisions (report schedule)." />
-            <Button variant="secondary" block onClick={evaluate} disabled={job.eval_status === "running" || testing || running} tour="train-evaluate">
-              {job.eval_status === "running" || testing ? "Testing…"
+            <Button variant="secondary" block onClick={evaluate} disabled={testing || running} tour="train-evaluate">
+              {testing ? "Testing…"
                 : running ? "Tested automatically every 10% of the run" : "Test the learned policy again"}
             </Button>
             {lastEval && (
