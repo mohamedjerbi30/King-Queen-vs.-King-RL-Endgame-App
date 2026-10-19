@@ -1,7 +1,7 @@
 // Backend location. Empty = same origin (local dev via the Vite proxy, or the
 // Flask server serving the built app). For a frontend hosted separately (e.g.
 // Vercel) set VITE_API_BASE to the backend URL, e.g. https://kqk-api.onrender.com
-const API_ORIGIN = (import.meta.env.VITE_API_BASE || "").replace(/\/$/, "");
+export const API_ORIGIN = (import.meta.env.VITE_API_BASE || "").replace(/\/$/, "");
 const BASE = `${API_ORIGIN}/api`;
 
 /** ws:// or wss:// URL of a backend WebSocket path such as "/ws/jobs". */

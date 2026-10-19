@@ -12,6 +12,7 @@ export const TOURS = {
     { target: "play-controls", title: "Agent controls", body: "▶ lets the agent play the whole game for you (⏸ pauses). 'Next agent move' plays one move. 'Hint' only shows what the agent would play, so you can compare with your idea." },
     { target: "play-speed", title: "Speed", body: "How fast the agent plays when you press ▶." },
     { target: "play-log", title: "Game record", body: "Every move in chess notation: '1. Qg6 Kd8' means White queen to g6, Black king to d8. '#' marks checkmate." },
+    { target: "@backend-status", title: "Which server?", body: "This line shows the backend the app is connected to (for the hosted site, the Render server), whether it is online, its mode, and whether the exact DP solution is loaded. 'open /api/health' lets you check it yourself." },
     { target: "@guide", title: "Need this again?", body: "Click Guide at any time to replay this tour. Your games and settings are saved in this browser automatically." },
   ],
   explore: [
