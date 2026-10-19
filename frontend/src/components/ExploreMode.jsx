@@ -3,6 +3,7 @@ import ChessBoard from "./ChessBoard.jsx";
 import ResultBanner from "./ResultBanner.jsx";
 import JobPicker, { useJobs, useSelectedJob } from "./JobPicker.jsx";
 import { agentQValues } from "../lib/agents.js";
+import { useServerInfo } from "../lib/server.js";
 import { api } from "../api.js";
 import { usePersistentState } from "../lib/storage.js";
 import { GRADE, grade, moveLabel, positionError, sqFromName, sqName, valueMeaning, valueTag } from "../lib/chess.js";
@@ -40,6 +41,7 @@ function summarise(rows, source) {
 }
 
 export default function ExploreMode() {
+  const server = useServerInfo();
   const [wkName, setWkName] = usePersistentState("explore.wk", "c6");
   const [wqName, setWqName] = usePersistentState("explore.wq", "e4");
   const [bkName, setBkName] = usePersistentState("explore.bk", "a8");
@@ -69,9 +71,10 @@ export default function ExploreMode() {
   const mcAvailable = agentOptions.some((o) => o.value === jobId && o.ready);
   const needDp = source !== "mc", needMc = source !== "dp";
 
+  // (Re)check once the server answers — a sleeping free server may wake up later.
   useEffect(() => {
-    api.dpStatus().then(setDpStatus).catch((e) => setError(e.message));
-  }, []);
+    api.dpStatus().then(setDpStatus).catch(() => setDpStatus({ status: "unreachable" }));
+  }, [server?.reachable]);
 
   const load = useCallback(async () => {
     setError(null);

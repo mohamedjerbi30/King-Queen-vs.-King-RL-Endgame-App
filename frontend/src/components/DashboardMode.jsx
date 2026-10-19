@@ -6,6 +6,7 @@ import {
 import { api } from "../api.js";
 import { Badge, Button, Callout, Card, ErrorText, StatRow } from "../ui/index.jsx";
 import SessionResults from "./SessionResults.jsx";
+import { useServerInfo } from "../lib/server.js";
 
 const COLORS = { navy: "#162A4B", gold: "#CC8A2C", rust: "#B1503E", sage: "#3C6B5C" };
 const BAR_COLORS = [COLORS.rust, COLORS.gold, COLORS.sage, COLORS.navy];
@@ -40,6 +41,7 @@ function PolicyBars({ data, domain, unit, format }) {
 }
 
 export default function DashboardMode({ active, onNavigate }) {
+  const server = useServerInfo();
   const [results, setResults] = useState(null);
   const [dpStatus, setDpStatus] = useState(null);
   const [baselines, setBaselines] = useState(null);
@@ -56,7 +58,7 @@ export default function DashboardMode({ active, onNavigate }) {
     if (!active) return;
     api.dpStatus().then(setDpStatus).catch(() => setDpStatus(null));
     api.baselines().then(setBaselines).catch(() => {});
-  }, [active]);
+  }, [active, server?.reachable]);
 
   async function verify() {
     try {

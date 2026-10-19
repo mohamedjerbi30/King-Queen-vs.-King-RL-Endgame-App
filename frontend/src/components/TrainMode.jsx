@@ -31,7 +31,7 @@ export default function TrainMode() {
   const [testing, setTesting] = useState(false);
   const [error, setError] = useState(null);
   const server = useServerInfo();
-  const serverUsable = !!server?.reachable && !server.serverless;
+  const serverUsable = !!server?.reachable && !!server.serverTraining;
   const where = runOn === "server" && serverUsable ? "server" : "browser";
 
   // The selected agent may have been trained in this browser or on the server.
@@ -153,7 +153,7 @@ export default function TrainMode() {
             info="This browser: trains on your computer in the background (works everywhere, also on the hosted version); the agent is saved in this browser. Server: trains on the backend with exact tests, only with a local or long-running server.">
             <Segmented value={where} onChange={setRunOn}
               options={[{ value: "browser", label: "This browser" },
-                { value: "server", label: "Server", disabled: !serverUsable, title: serverUsable ? "" : "No long-running server available" }]} />
+                { value: "server", label: "Server", disabled: !serverUsable, title: serverUsable ? "" : server?.lowMemory ? "Disabled on this low-memory server — train in the browser" : "No long-running server available" }]} />
           </Field>
           <Segmented value={preset} onChange={applyPreset} tour="train-presets"
             options={Object.entries(PRESETS).map(([k, p]) => ({ value: k, label: p.label }))} />

@@ -1,12 +1,19 @@
 # Render blueprint for the backend (Flask API + WebSockets).
-# The frontend can stay on Vercel: set VITE_API_BASE there to this service's URL.
+# The frontend stays on Vercel: set VITE_API_BASE there to this service's URL.
 services:
   - type: web
     name: kqk-endgame-api
     runtime: docker
     rootDir: backend
     dockerfilePath: ./Dockerfile
-    # Memory: ~0.4 GB at rest (DP tables), around 1 GB while an exact test runs -> 2 GB instance (Render "standard").
-    plan: standard
+    dockerContext: .
+    # Free instance: 512 MB RAM. The server needs ~300 MB in LOW_MEMORY mode
+    # (optimal agent, exact values, verified baselines); training runs in the
+    # browser. On a paid instance with >= 2 GB, remove LOW_MEMORY to also get
+    # server training with exact tests.
+    plan: free
+    envVars:
+      - key: LOW_MEMORY
+        value: "1"
     healthCheckPath: /api/health
     autoDeploy: true

@@ -41,7 +41,7 @@ def test_q_values_match_v():
     for bid in range(0, len(sol.space.boards), 9973):
         wk, wq, bk = sol.space.boards[bid]
         qs = sol.q_values(wk, wq, bk, sol.budget)
-        assert abs(max(q for _, _, q, _ in qs) - sol.value(wk, wq, bk, sol.budget)) < 1e-12
+        assert abs(max(q for _, _, q, _ in qs) - sol.value(wk, wq, bk, sol.budget)) < 1e-6  # V is stored as float32
     print("test_q_values_match_v OK")
 
 

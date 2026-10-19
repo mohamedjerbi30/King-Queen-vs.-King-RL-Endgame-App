@@ -54,9 +54,10 @@ export default function PlayMode({ active }) {
       ? "This agent is still training — it becomes playable at its first checkpoint (10% of the run)."
       : "No trained Monte Carlo agent yet — train one in Live Training (it runs in your browser).");
 
+  // (Re)check once the server answers — a sleeping free server may wake up later.
   useEffect(() => {
     api.dpStatus().then((s) => setDpReady(s.status === "ready")).catch(() => setDpReady(false));
-  }, []);
+  }, [server?.reachable]);
 
   const startNewGame = useCallback(async () => {
     setError(null);

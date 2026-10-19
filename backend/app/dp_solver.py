@@ -19,6 +19,7 @@ budget is seconds, not hours.
 """
 from __future__ import annotations
 import pickle
+from array import array
 import time
 from pathlib import Path
 import numpy as np
@@ -47,8 +48,10 @@ class Transitions:
         move_terminal_val = []  # +1/-1 for kind 0/1, 0.0 placeholder otherwise
         move_n_replies = []
         move_n_captures = []
-        flat_move_idx = []
-        flat_next_board = []
+        # 16M entries each: typed arrays (4 bytes per entry) instead of Python
+        # lists of ints (~36 bytes each), so building fits in little memory.
+        flat_move_idx = array("i")
+        flat_next_board = array("i")
 
         mi = 0
         for bid, (wk, wq, bk) in enumerate(space.boards):
@@ -87,8 +90,21 @@ class Transitions:
         self.move_terminal_val = np.array(move_terminal_val, dtype=np.float64)
         self.move_n_replies = np.array(move_n_replies, dtype=np.int32)
         self.move_n_captures = np.array(move_n_captures, dtype=np.int32)
-        self.flat_move_idx = np.array(flat_move_idx, dtype=np.int64)
-        self.flat_next_board = np.array(flat_next_board, dtype=np.int64)
+        self.flat_move_idx = np.frombuffer(flat_move_idx, dtype=np.int32).copy()
+        self.flat_next_board = np.frombuffer(flat_next_board, dtype=np.int32).copy()
+        del flat_move_idx, flat_next_board
+        self.compact()
+
+    def compact(self):
+        """Store every array in the smallest dtype that holds its values
+        (indices < 4M -> int32, small counts and +-1 rewards -> int8). Same
+        numbers, about 40% of the memory: lets the server fit a 512 MB host."""
+        self.flat_move_idx = self.flat_move_idx.astype(np.int32, copy=False)
+        self.flat_next_board = self.flat_next_board.astype(np.int32, copy=False)
+        self.move_terminal_val = self.move_terminal_val.astype(np.int8, copy=False)
+        self.move_n_replies = self.move_n_replies.astype(np.int8, copy=False)
+        self.move_n_captures = self.move_n_captures.astype(np.int8, copy=False)
+        return self
 
     def save(self, path: Path):
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -100,7 +116,7 @@ class Transitions:
         obj = cls.__new__(cls)
         with open(path, "rb") as f:
             obj.__dict__.update(pickle.load(f))
-        return obj
+        return obj.compact()  # caches written before compaction are converted on load
 
 
 def build_transitions(space: StateSpace, progress_cb=None) -> Transitions:
@@ -221,12 +237,13 @@ class DPSolution:
 
     def save(self, path: Path = CACHE_PATH):
         path.parent.mkdir(parents=True, exist_ok=True)
-        np.savez_compressed(str(path) + ".npz", V=self.V, PI=self.PI, budget=self.budget)
+        # float32 values (7 significant digits) and int32 move indices: half the size.
+        np.savez_compressed(str(path) + ".npz", V=self.V.astype(np.float32), PI=self.PI.astype(np.int32), budget=self.budget)
 
     @classmethod
     def load(cls, space: StateSpace, trans: Transitions, path: Path = CACHE_PATH):
         d = np.load(str(path) + ".npz")
-        return cls(space, trans, d["V"], d["PI"], int(d["budget"]))
+        return cls(space, trans, d["V"].astype(np.float32, copy=False), d["PI"].astype(np.int32, copy=False), int(d["budget"]))
 
 
 def solve(budget: int = DEFAULT_BUDGET, progress_cb=None) -> DPSolution:

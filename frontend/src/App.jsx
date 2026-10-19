@@ -84,8 +84,13 @@ export default function App() {
           solution, which this serverless host cannot load — run the app locally (<code>python run.py</code>) for those.
         </Callout>
       )}
-      {server && !server.reachable && (
-        <Callout tone="warn">The backend cannot be reached. Start it with <code>python run.py</code> (or check the deployed API URL).</Callout>
+      {server && !server.reachable && server.waking && (
+        <Callout tone="info">Connecting to the server… a free server sleeps when idle and can take about a minute to wake up.
+          Training in the browser already works meanwhile.</Callout>
+      )}
+      {server && !server.reachable && !server.waking && (
+        <Callout tone="warn">The backend cannot be reached. Start it with <code>python run.py</code> (or check the deployed API URL).
+          Training in the browser still works.</Callout>
       )}
       <p className="page-blurb">{current.blurb}</p>
 

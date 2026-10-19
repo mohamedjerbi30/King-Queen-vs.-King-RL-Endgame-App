@@ -27,13 +27,25 @@ Browser ──HTTPS──► Vercel (React static build)
    └──HTTPS + WSS──► Render / Railway / VPS (Flask + flask-sock, 1 process, threads)
 ```
 
+### Free plan (512 MB) — works
+
+The repository is set up for Render's **free** plan: `render.yaml` uses `plan: free` and sets `LOW_MEMORY=1`.
+
+- **Memory:** the DP tables are stored compactly, so the server needs about **300 MB** (measured).
+- **What runs on the server:** the optimal agent, exact values, and the pre-verified baselines.
+- **What runs in the browser:** training and agent tests. Server training and exact policy tests are refused on the server, because they peak around 1 GB.
+- **The build is fine:** it peaks around 0.9 GB, but Render builds run on separate machines with 8 GB.
+- **Sleep:** a free instance sleeps after 15 minutes without traffic. The first visit then waits about a minute; the page shows "Connecting to the server…" and retries on its own.
+
+On a paid instance with at least 2 GB, delete `LOW_MEMORY` to also enable server training with exact tests and WebSocket streaming.
+
 ### 1. Deploy the backend on Render
 
 The repository contains a Render blueprint ([render.yaml](render.yaml)) and [backend/Dockerfile](backend/Dockerfile). The image solves the DP once at build time ([backend/build_dp.py](backend/build_dp.py), ~3 min), so the server starts ready.
 
 1. Push the repository to GitHub.
 2. In Render, choose **New → Blueprint** and select the repository. Render reads `render.yaml`.
-3. Keep a plan with **2 GB of RAM** (`standard`). The server uses ~0.4 GB at rest and around 1 GB while an exact test runs; smaller plans will run out of memory.
+3. Choose the **Free** instance type, and check that the environment variable `LOW_MEMORY=1` is present (the Blueprint adds it).
 4. Wait for the build. Then check `https://<your-service>.onrender.com/api/health` → `{"ok": true}`.
 
 The start command is fixed in the Dockerfile:

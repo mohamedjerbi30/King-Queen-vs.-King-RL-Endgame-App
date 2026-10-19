@@ -20,7 +20,7 @@ const STATUS = { running: "training…", done: "done", stopped: "stopped", error
 export function useAgentOptions() {
   const { agents, loaded: bLoaded, live } = useBrowserAgents();
   const server = useServerInfo();
-  const serverUsable = !!server?.reachable && !server.serverless;
+  const serverUsable = !!server?.reachable && !!server.serverTraining;
   const { jobs, loaded: sLoaded, transport } = useLiveJobs();
 
   const browser = agents.map((a) => {

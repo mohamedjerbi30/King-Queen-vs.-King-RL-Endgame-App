@@ -21,6 +21,14 @@ bp = Blueprint("api", __name__, url_prefix="/api")
 SERVERLESS = bool(os.environ.get("VERCEL") or os.environ.get("AWS_LAMBDA_FUNCTION_NAME"))
 INSTANCE_ID = uuid.uuid4().hex[:8]  # identifies this process in error messages
 
+# LOW_MEMORY=1 (e.g. a free 512 MB instance): keep the exact DP features
+# (optimal agent, exact values, the pre-verified baselines) but refuse the
+# memory-hungry ones — server training and exact policy tests (~1 GB peaks).
+# Agents are then trained in the browser instead.
+LOW_MEMORY = os.environ.get("LOW_MEMORY", "").lower() in ("1", "true", "yes")
+SERVER_TRAINING = not (SERVERLESS or LOW_MEMORY)
+LOW_MEMORY_MSG = "Server training and exact tests are disabled on this low-memory server — train in the browser instead."
+
 UNKNOWN_JOB = (
     "This trained agent does not exist on this server instance. The server was "
     "restarted, or it runs on a serverless host (e.g. Vercel) that cannot keep "
@@ -47,7 +55,8 @@ def _moves_json(moves):
 # ---------------------------------------------------------------- meta
 @bp.get("/health")
 def health():
-    return jsonify({"ok": True, "serverless": SERVERLESS, "instance": INSTANCE_ID})
+    return jsonify({"ok": True, "serverless": SERVERLESS, "low_memory": LOW_MEMORY,
+                    "server_training": SERVER_TRAINING, "instance": INSTANCE_ID})
 
 
 @bp.get("/constants")
@@ -186,6 +195,8 @@ def baselines():
 
 @bp.post("/baselines/verify")
 def baselines_verify():
+    if LOW_MEMORY and baseline_check.result is None:
+        return jsonify({"error": LOW_MEMORY_MSG}), 503
     if dp_state.solution is None:
         return jsonify({"error": "DP solution not ready"}), 409
     baseline_check.start()
@@ -195,6 +206,8 @@ def baselines_verify():
 # ---------------------------------------------------------------- MC training mode
 @bp.post("/train/start")
 def train_start():
+    if not SERVER_TRAINING:
+        return jsonify({"error": LOW_MEMORY_MSG}), 503
     data = request.get_json(silent=True) or {}
     episodes = int(data.get("episodes", 20000))
     episodes = max(100, min(episodes, 500000))  # keep a single run bounded for the live demo
@@ -231,6 +244,8 @@ def train_jobs():
 
 @bp.post("/train/evaluate/<job_id>")
 def train_evaluate(job_id):
+    if LOW_MEMORY:
+        return jsonify({"error": LOW_MEMORY_MSG}), 503
     job = job_registry.get(job_id)
     if job is None:
         return jsonify({"error": UNKNOWN_JOB, "code": "unknown_job", "instance": INSTANCE_ID}), 404
