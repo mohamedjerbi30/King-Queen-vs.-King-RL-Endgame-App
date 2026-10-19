@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import ChessBoard from "./ChessBoard.jsx";
 import ResultBanner from "./ResultBanner.jsx";
 import JobPicker, { useJobs, useSelectedJob } from "./JobPicker.jsx";
+import { agentMove } from "../lib/agents.js";
 import { api } from "../api.js";
 import { usePersistentState } from "../lib/storage.js";
 import { gameRecord, moveLabel, sqName, valueMeaning, valueTag } from "../lib/chess.js";
@@ -29,7 +30,7 @@ export default function PlayMode({ active }) {
   const [speed, setSpeed] = usePersistentState("play.speed", "600");
   const [game, setGame] = usePersistentState("play.game", EMPTY_GAME);
   const [jobId] = useSelectedJob();
-  const { jobs } = useJobs();
+  const { options: agentOptions } = useJobs();
 
   const [running, setRunning] = useState(false); // agent auto-play (never persisted)
   const [selected, setSelected] = useState(null); // 'K' | 'Q'
@@ -43,13 +44,15 @@ export default function PlayMode({ active }) {
   useEffect(() => setBannerHidden(false), [game.outcome]); // show it again for each finished game
 
   const pos = game.position;
-  const mcAvailable = jobs.some((j) => j.job_id === jobId);
-  const agentAvailable = source === "dp" ? dpReady : mcAvailable && !server?.serverless;
-  const agentProblem = source === "mc" && server?.serverless
-    ? "Trained agents cannot be kept on this serverless host (each request may reach a different instance). Use the local app or a long-running server."
+  const mcAvailable = agentOptions.some((o) => o.value === jobId && o.ready);
+  const agentAvailable = source === "dp" ? dpReady : mcAvailable;
+  const agentProblem = source === "dp" && server?.serverless
+    ? "The optimal agent needs the exact DP solution, which this hosted version cannot load. Use the trained agent (MC) or run the app locally."
     : source === "dp"
     ? (dpReady ? null : "The exact DP solution is not loaded on this server yet (Explore → Solve DP).")
-    : (mcAvailable ? null : "No trained Monte Carlo agent yet — start a run in Live Training first.");
+    : (mcAvailable ? null : agentOptions.some((o) => o.value === jobId)
+      ? "This agent is still training — it becomes playable at its first checkpoint (10% of the run)."
+      : "No trained Monte Carlo agent yet — train one in Live Training (it runs in your browser).");
 
   useEffect(() => {
     api.dpStatus().then((s) => setDpReady(s.status === "ready")).catch(() => setDpReady(false));
@@ -117,7 +120,9 @@ export default function PlayMode({ active }) {
 
   const askAgent = useCallback(async () => {
     if (!pos) return null;
-    const res = await api.agentMove(pos.wk, pos.wq, pos.bk, pos.moves_left, source, source === "mc" ? jobId : undefined);
+    const res = source === "mc"
+      ? await agentMove(jobId, pos)
+      : await api.agentMove(pos.wk, pos.wq, pos.bk, pos.moves_left, "dp");
     setSuggestion(res);
     return res;
   }, [pos, source, jobId]);
@@ -250,7 +255,7 @@ export default function PlayMode({ active }) {
             <Callout tone="info" tour="play-hint">
               Agent's choice: <strong>{moveLabel(suggestion.piece, suggestion.dest_name)}</strong> — {source === "dp"
                 ? <>value {suggestion.value.toFixed(3)} = <strong>{valueMeaning(suggestion.value)}</strong> ({valueTag(suggestion.value)}).</>
-                : <>learned value {suggestion.value.toFixed(3)} (an estimate: ≈ {valueTag(suggestion.value)}).</>}
+                : <>learned value {suggestion.value.toFixed(3)} (an estimate: {valueTag(suggestion.value)}).</>}
             </Callout>
           )}
         </Card>

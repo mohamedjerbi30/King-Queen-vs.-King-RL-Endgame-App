@@ -6,6 +6,7 @@ import DashboardMode from "./components/DashboardMode.jsx";
 import Tour from "./tour/Tour.jsx";
 import { TOURS } from "./tour/tours.js";
 import { clearStored, usePersistentState } from "./lib/storage.js";
+import { clearBrowserAgents } from "./lib/browserAgents.js";
 import { Button, Callout } from "./ui/index.jsx";
 import { useServerInfo } from "./lib/server.js";
 
@@ -43,9 +44,9 @@ export default function App() {
   }
 
   function resetSaved() {
-    if (window.confirm("Forget all saved games, positions, settings and guide progress in this browser?")) {
+    if (window.confirm("Forget all saved games, positions, settings, trained agents and guide progress in this browser?")) {
       clearStored();
-      window.location.reload();
+      clearBrowserAgents().finally(() => window.location.reload());
     }
   }
 
@@ -78,10 +79,9 @@ export default function App() {
       </nav>
       {server?.serverless && (
         <Callout tone="warn" tour="serverless-banner">
-          <strong>Limited hosted version.</strong> This backend runs on a serverless host (Vercel): every request may be
-          answered by a different short-lived instance. You can play games yourself, but the <strong>optimal agent</strong>,
-          the <strong>exact values</strong>, <strong>training</strong> and <strong>trained agents</strong> need a long-running server.
-          Run the app locally (<code>python run.py</code>) or deploy the backend on Render — see DEPLOY.md.
+          <strong>Hosted version.</strong> Training runs in your browser and your agents are saved here, so Play, Explore and
+          Live Training work normally. The <strong>optimal agent</strong> and the <strong>exact values</strong> need the large DP
+          solution, which this serverless host cannot load — run the app locally (<code>python run.py</code>) for those.
         </Callout>
       )}
       {server && !server.reachable && (

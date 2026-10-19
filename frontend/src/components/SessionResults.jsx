@@ -98,7 +98,7 @@ export default function SessionResults({ onNavigate }) {
             )}
           </div>
           <div>
-            <div className="subhead">Agents you trained (exact test)</div>
+            <div className="subhead">Agents you trained (latest test)</div>
             {runs.length === 0 ? (
               <div className="muted">None yet — start a run in Live Training.</div>
             ) : (
@@ -107,7 +107,7 @@ export default function SessionResults({ onNavigate }) {
                 <tbody>
                   {runs.map((r) => (
                     <tr key={r.job_id}>
-                      <td>{r.job_id.slice(0, 6)}</td>
+                      <td>{r.job_id.startsWith("b") ? `${r.job_id.slice(1, 7)} (browser)` : `${r.job_id.slice(0, 6)} (server)`}</td>
                       <td>{r.params ? `α=${r.params.alpha}, Q0=${r.params.q0}` : "—"}</td>
                       <td>{r.evaluation.episodes.toLocaleString()}</td>
                       <td>{(100 * r.evaluation.mate_rate).toFixed(1)}%</td>

@@ -1,6 +1,16 @@
-# Deploying the app (backend with WebSockets)
+# Deploying the app
 
-## Why the backend cannot stay on Vercel
+## Option A — everything on Vercel (current setup, free)
+
+The frontend trains Monte Carlo agents **in the visitor's browser** (Web Worker, ~10,000 games/s) and saves them in IndexedDB. Live Training, the trained agent in Play, the learned values in Explore and the Results page therefore work on Vercel with no extra setup.
+
+What stays unavailable on Vercel: the **optimal agent (DP)**, the **exact values**, and **exact tests**. They need the ~360 MB DP solution, which serverless functions cannot build or keep. The app shows a banner explaining this. Tests of browser-trained agents use 5,000 fixed random games instead (an estimate, about ±0.01).
+
+## Option B — backend on a long-running server (everything enabled)
+
+To also get the optimal agent, exact values, server training with exact tests and WebSocket streaming online, deploy the backend as described below.
+
+### Why the backend features cannot run on Vercel
 
 Vercel runs the Flask backend as **serverless functions**: each request may hit a different short-lived instance.
 
@@ -17,7 +27,7 @@ Browser ──HTTPS──► Vercel (React static build)
    └──HTTPS + WSS──► Render / Railway / VPS (Flask + flask-sock, 1 process, threads)
 ```
 
-## 1. Deploy the backend on Render
+### 1. Deploy the backend on Render
 
 The repository contains a Render blueprint ([render.yaml](render.yaml)) and [backend/Dockerfile](backend/Dockerfile). The image solves the DP once at build time ([backend/build_dp.py](backend/build_dp.py), ~3 min), so the server starts ready.
 
@@ -36,7 +46,7 @@ Keep **exactly one worker**: jobs live in that process's memory. Threads serve t
 
 Railway, Fly.io or any VPS work the same way: build the Dockerfile in `backend/` and expose `$PORT`.
 
-## 2. Point the Vercel frontend at the backend
+### 2. Point the Vercel frontend at the backend
 
 1. In the Vercel project, go to **Settings → Environment Variables** and add:
    `VITE_API_BASE = https://<your-service>.onrender.com` (no trailing slash).
@@ -46,14 +56,14 @@ The frontend then calls `https://<service>/api/...` for HTTP and `wss://<service
 
 Once this works, the `backend` service and the `/api` rewrite in [vercel.json](vercel.json) are no longer used and can be removed.
 
-## 3. Running locally (unchanged)
+## Running locally
 
 ```bash
 cd backend && pip install -r requirements.txt && python run.py   # http://localhost:5000 (serves the built frontend too)
 cd frontend && npm install && npm run dev                          # http://localhost:5173 (proxies /api and WebSockets)
 ```
 
-## Live streams
+## Live streams (server training)
 
 | Stream | Pushes |
 |---|---|

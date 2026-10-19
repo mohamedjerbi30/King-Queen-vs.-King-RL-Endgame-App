@@ -94,7 +94,7 @@ that directory with any static file server, pointed at a reachable Flask API
 
 ## Deployment
 
-The backend must run as one long-lived process (training jobs and WebSocket streams live in its memory), so it cannot run on Vercel's serverless functions. See [DEPLOY.md](DEPLOY.md): backend on Render (Dockerfile + `render.yaml`), frontend on Vercel with `VITE_API_BASE`.
+The backend must run as one long-lived process (training jobs and WebSocket streams live in its memory), so it cannot run on Vercel's serverless functions. Agents can also be trained **in the browser** (`frontend/src/lib/engine.js`, a tested port of the Python engine and MC agent, run in a Web Worker and saved in IndexedDB), so training works on the hosted Vercel version too. See [DEPLOY.md](DEPLOY.md): Vercel only (browser training), or backend on Render (Dockerfile + `render.yaml`) for the DP features.
 
 ## Interface notes
 

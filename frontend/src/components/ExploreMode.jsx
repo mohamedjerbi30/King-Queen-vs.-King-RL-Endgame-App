@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import ChessBoard from "./ChessBoard.jsx";
 import ResultBanner from "./ResultBanner.jsx";
 import JobPicker, { useJobs, useSelectedJob } from "./JobPicker.jsx";
+import { agentQValues } from "../lib/agents.js";
 import { api } from "../api.js";
 import { usePersistentState } from "../lib/storage.js";
 import { GRADE, grade, moveLabel, positionError, sqFromName, sqName, valueMeaning, valueTag } from "../lib/chess.js";
@@ -48,7 +49,7 @@ export default function ExploreMode() {
   const [placing, setPlacing] = usePersistentState("explore.placing", "wk");
   const [history, setHistory] = usePersistentState("explore.history", []);
   const [jobId] = useSelectedJob();
-  const { jobs } = useJobs();
+  const { options: agentOptions } = useJobs();
 
   const [selected, setSelected] = useState(null);
   const [lastMove, setLastMove] = useState(null);
@@ -65,7 +66,7 @@ export default function ExploreMode() {
   const wk = sqFromName(wkName), wq = sqFromName(wqName), bk = sqFromName(bkName);
   const posError = positionError(wk, wq, bk);
   const dpReady = dpStatus?.status === "ready";
-  const mcAvailable = jobs.some((j) => j.job_id === jobId);
+  const mcAvailable = agentOptions.some((o) => o.value === jobId && o.ready);
   const needDp = source !== "mc", needMc = source !== "dp";
 
   useEffect(() => {
@@ -82,7 +83,7 @@ export default function ExploreMode() {
         setDpRows(res.qvalues);
       } else setDpRows([]);
       if (needMc && mcAvailable) {
-        const res = await api.trainQtable(jobId, wk, wq, bk);
+        const res = await agentQValues(jobId, wk, wq, bk);
         setMcRows(res.qvalues);
         setCanonical(res.canonical);
       } else setMcRows([]);
@@ -213,7 +214,7 @@ export default function ExploreMode() {
   const summary = summarise(rows, source);
   const sourceProblem =
     needDp && !dpReady ? "The exact DP values are not loaded on this server yet." :
-    needMc && !mcAvailable ? "No trained Monte Carlo agent yet — start a run in Live Training, then come back." : null;
+    needMc && !mcAvailable ? "No trained Monte Carlo agent yet — train one in Live Training (it runs in your browser), then come back." : null;
 
   return (
     <div className="page-grid">
