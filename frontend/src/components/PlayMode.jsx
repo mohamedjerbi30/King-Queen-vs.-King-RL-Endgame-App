@@ -1,242 +1,245 @@
-import { useEffect, useState, useCallback } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import ChessBoard from "./ChessBoard.jsx";
-import JobPicker from "./JobPicker.jsx";
+import JobPicker, { useJobs, useSelectedJob } from "./JobPicker.jsx";
 import { api } from "../api.js";
+import { usePersistentState } from "../lib/storage.js";
+import { gameRecord, moveLabel, sqName, valueMeaning, valueTag } from "../lib/chess.js";
+import { Badge, Button, Callout, Card, ErrorText, Field, NumberInput, Segmented, Select } from "../ui/index.jsx";
 
-export default function PlayMode() {
-  const [budget, setBudget] = useState(40);
-  const [seed, setSeed] = useState("");
-  const [position, setPosition] = useState(null); // {wk,wq,bk,moves_left,wk_name,wq_name,bk_name}
-  const [legalMoves, setLegalMoves] = useState([]);
-  const [selectedPiece, setSelectedPiece] = useState(null);
-  const [lastMove, setLastMove] = useState(null);
-  const [log, setLog] = useState([]);
-  const [outcome, setOutcome] = useState(null); // null while ongoing
-  const [controller, setController] = useState("human"); // human | agent
-  const [source, setSource] = useState("dp"); // dp | mc
-  const [jobId, setJobId] = useState("");
-  const [dpReady, setDpReady] = useState(false);
+const EMPTY_GAME = {
+  position: null, legalMoves: [], moves: [], outcome: null, finalBoard: null,
+  ret: 0, startBudget: 40, lastMove: null, blackMove: null,
+};
+
+const OUTCOME_TEXT = {
+  checkmate: "Checkmate — White wins",
+  stalemate: "Stalemate — draw (counts as failure)",
+  queen_captured: "Queen captured — failure",
+  budget_exhausted: "Move budget used up — failure",
+};
+
+export default function PlayMode({ active }) {
+  const [budget, setBudget] = usePersistentState("play.budget", 40);
+  const [seed, setSeed] = usePersistentState("play.seed", "");
+  const [source, setSource] = usePersistentState("play.source", "dp");
+  const [speed, setSpeed] = usePersistentState("play.speed", "600");
+  const [game, setGame] = usePersistentState("play.game", EMPTY_GAME);
+  const [jobId] = useSelectedJob();
+  const { jobs } = useJobs();
+
+  const [running, setRunning] = useState(false); // agent auto-play (never persisted)
+  const [selected, setSelected] = useState(null); // 'K' | 'Q'
   const [suggestion, setSuggestion] = useState(null);
+  const [dpReady, setDpReady] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
-  const [finalBoard, setFinalBoard] = useState(null);
-  const [startBudget, setStartBudget] = useState(null);
-  const [ret, setRet] = useState(0); // discounted return G_0 accumulated so far
+  const busyRef = useRef(false);
+
+  const pos = game.position;
+  const mcAvailable = jobs.some((j) => j.job_id === jobId);
+  const agentAvailable = source === "dp" ? dpReady : mcAvailable;
+  const agentProblem = source === "dp"
+    ? (dpReady ? null : "The exact DP solution is not loaded on this server yet (Explore → Solve DP).")
+    : (mcAvailable ? null : "No trained Monte Carlo agent yet — start a run in Live Training first.");
 
   useEffect(() => {
-    api.dpStatus().then((s) => setDpReady(s.status === "ready")).catch(() => {});
-    startNewGame();
+    api.dpStatus().then((s) => setDpReady(s.status === "ready")).catch(() => setDpReady(false));
+  }, []);
+
+  const startNewGame = useCallback(async () => {
+    setError(null);
+    setRunning(false);
+    setSelected(null);
+    setSuggestion(null);
+    try {
+      const res = await api.newGame(budget || 40, seed === "" ? undefined : seed);
+      setGame({ ...EMPTY_GAME, position: res.position, legalMoves: res.legal_moves, startBudget: res.position.moves_left });
+    } catch (e) {
+      setError(e.message);
+    }
+  }, [budget, seed, setGame]);
+
+  // First visit (nothing stored yet): deal a game.
+  useEffect(() => {
+    if (!game.position && !game.finalBoard) startNewGame();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const startNewGame = useCallback(async (b = budget, s = seed) => {
-    setError(null);
-    setBusy(true);
-    try {
-      const res = await api.newGame(b, s === "" ? undefined : s);
-      setPosition(res.position);
-      setLegalMoves(res.legal_moves);
-      setSelectedPiece(null);
-      setLastMove(null);
-      setOutcome(null);
-      setFinalBoard(null);
-      setStartBudget(res.position.moves_left);
-      setRet(0);
-      setLog([`New game — White to move (budget ${res.position.moves_left}).`]);
-      setSuggestion(null);
-    } catch (e) {
-      setError(e.message);
-    } finally {
-      setBusy(false);
-    }
-  }, [budget, seed]);
-
-  const destsForSelected = selectedPiece
-    ? legalMoves.filter((m) => m.piece === selectedPiece)
-    : [];
-
-  async function handleSquareClick(sq) {
-    if (!position || outcome || busy || controller !== "human") return;
-    if (sq === position.wk && legalMoves.some((m) => m.piece === "K")) {
-      setSelectedPiece("K");
-      return;
-    }
-    if (sq === position.wq && legalMoves.some((m) => m.piece === "Q")) {
-      setSelectedPiece("Q");
-      return;
-    }
-    if (selectedPiece) {
-      const mv = destsForSelected.find((m) => m.dest === sq);
-      if (mv) {
-        await playMove(selectedPiece, sq);
-      }
-    }
-  }
-
-  async function playMove(piece, dest) {
+  const playMove = useCallback(async (piece, dest) => {
+    if (!pos || busyRef.current) return false;
+    busyRef.current = true;
     setBusy(true);
     setError(null);
     try {
-      const from = piece === "K" ? position.wk : position.wq;
-      const destName = (legalMoves.find((m) => m.piece === piece && m.dest === dest) || {}).dest_name ?? dest;
-      const res = await api.step(position, piece, dest, undefined);
-      setLastMove({ from, to: dest });
-      setLog((l) => [...l, `White ${piece} → ${destName}.`]);
-      setSelectedPiece(null);
-      setSuggestion(null);
-
-      const t = (startBudget ?? position.moves_left) - position.moves_left;
-      setRet((g) => g + Math.pow(0.99, t) * res.reward);
+      const res = await api.step(pos, piece, dest, undefined);
+      const t = game.startBudget - pos.moves_left; // White moves already played
+      const ret = game.ret + Math.pow(0.99, t) * res.reward;
+      const from = piece === "K" ? pos.wk : pos.wq;
+      const wk = piece === "K" ? dest : pos.wk;
+      const wq = piece === "Q" ? dest : pos.wq;
+      const entry = { white: moveLabel(piece, dest) };
       if (res.done) {
-        setOutcome(res.outcome);
-        setLog((l) => [...l, `Game over: ${res.outcome} (reward ${res.reward}).`]);
-        // Keep the final board on screen (Black does not move after a terminal White move).
-        const wk = piece === "K" ? dest : position.wk;
-        const wq = piece === "Q" ? dest : position.wq;
-        if (res.outcome === "queen_captured") {
-          setFinalBoard({ wk, wq: -1, bk: wq }); // Black king now stands on the queen's square
-        } else {
-          setFinalBoard({ wk, wq, bk: position.bk });
-        }
-        setPosition(null);
-        setLegalMoves([]);
+        entry.result = res.outcome === "checkmate" ? "#" : `(${res.outcome.replace("_", " ")})`;
+        if (res.outcome === "queen_captured") entry.black = `Kx${sqName(wq)}`;
+        const finalBoard = res.outcome === "queen_captured" ? { wk, wq: -1, bk: wq } : { wk, wq, bk: pos.bk };
+        setGame({ ...game, position: null, legalMoves: [], moves: [...game.moves, entry], outcome: res.outcome,
+          finalBoard, ret, lastMove: { from, to: dest }, blackMove: res.outcome === "queen_captured" ? { from: pos.bk, to: wq } : null });
+        setRunning(false);
       } else {
-        setPosition(res.position);
-        setLegalMoves(res.legal_moves);
-        if (res.black_reply) {
-          setLog((l) => [...l, `Black king → ${res.black_reply}.`]);
-        }
+        entry.black = `K${res.black_reply}`;
+        setGame({ ...game, position: res.position, legalMoves: res.legal_moves, moves: [...game.moves, entry], ret,
+          lastMove: { from, to: dest }, blackMove: { from: pos.bk, to: res.position.bk } });
       }
+      setSelected(null);
+      setSuggestion(null);
+      return true;
     } catch (e) {
       setError(e.message);
+      return false;
     } finally {
+      busyRef.current = false;
       setBusy(false);
     }
-  }
+  }, [pos, game, setGame]);
 
-  async function requestAgentMove(play) {
-    if (!position) return;
-    setBusy(true);
-    setError(null);
+  const askAgent = useCallback(async () => {
+    if (!pos) return null;
+    const res = await api.agentMove(pos.wk, pos.wq, pos.bk, pos.moves_left, source, source === "mc" ? jobId : undefined);
+    setSuggestion(res);
+    return res;
+  }, [pos, source, jobId]);
+
+  const agentStep = useCallback(async () => {
     try {
-      const res = await api.agentMove(
-        position.wk,
-        position.wq,
-        position.bk,
-        position.moves_left,
-        source,
-        source === "mc" ? jobId : undefined
-      );
-      setSuggestion(res);
-      if (play) {
-        await playMove(res.piece, res.dest);
-      }
+      const mv = await askAgent();
+      if (!mv || !(await playMove(mv.piece, mv.dest))) setRunning(false);
     } catch (e) {
       setError(e.message);
-    } finally {
-      setBusy(false);
+      setRunning(false); // never retry in a loop on errors
     }
+  }, [askAgent, playMove]);
+
+  // Auto-play while running (only on the visible page).
+  useEffect(() => {
+    if (!running || !active || !pos || busy) return;
+    if (!agentAvailable) {
+      setRunning(false);
+      return;
+    }
+    const t = setTimeout(agentStep, Number(speed));
+    return () => clearTimeout(t);
+  }, [running, active, pos, busy, agentAvailable, agentStep, speed]);
+
+  function handleSquareClick(sq) {
+    if (!pos || busy || running) return;
+    if (sq === pos.wk) return setSelected("K");
+    if (sq === pos.wq) return setSelected("Q");
+    if (selected && game.legalMoves.some((m) => m.piece === selected && m.dest === sq)) playMove(selected, sq);
+    else setSelected(null);
   }
 
-  // auto-play when the agent controls White
-  useEffect(() => {
-    if (controller === "agent" && position && !outcome && !busy) {
-      const t = setTimeout(() => requestAgentMove(true), 400);
-      return () => clearTimeout(t);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [controller, position, outcome, busy]);
+  const dests = selected ? game.legalMoves.filter((m) => m.piece === selected) : [];
+  const board = pos || game.finalBoard;
+  const record = gameRecord(game.moves);
 
   return (
-    <div className="panel-grid">
-      <div className="card" style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 14 }}>
-        {position ? (
+    <div className="page-grid">
+      <Card tour="play-board" className="board-card">
+        {board ? (
           <ChessBoard
-            wk={position.wk}
-            wq={position.wq}
-            bk={position.bk}
-            legalDests={destsForSelected}
-            selectedPiece={selectedPiece}
+            wk={board.wk} wq={board.wq} bk={board.bk}
+            legalDests={dests}
+            selected={selected ? (selected === "K" ? pos?.wk : pos?.wq) : null}
             onSquareClick={handleSquareClick}
-            lastMove={lastMove}
+            lastMove={game.lastMove}
+            blackMove={game.blackMove}
           />
-        ) : finalBoard ? (
-          <ChessBoard wk={finalBoard.wk} wq={finalBoard.wq} bk={finalBoard.bk} lastMove={lastMove} />
         ) : (
-          <div style={{ padding: 60, color: "var(--muted)" }}>Loading…</div>
+          <div className="empty">Loading…</div>
         )}
-        {position && (
-          <div style={{ fontSize: 13, color: "var(--muted)" }}>
-            Moves left: <strong style={{ color: "var(--navy)" }}>{position.moves_left}</strong> · White to move
-            · return so far G = <strong style={{ color: "var(--navy)" }}>{ret.toFixed(4)}</strong>
-          </div>
-        )}
-        {outcome && (
-          <div className={`badge ${outcome === "checkmate" ? "success" : "fail"}`} style={{ fontSize: 14 }}>
-            {outcome === "checkmate" ? "Checkmate — success" : `Failure — ${outcome.replace("_", " ")}`} · final return G = {ret.toFixed(4)}
-          </div>
-        )}
-        {error && <div style={{ color: "var(--rust)", fontSize: 13 }}>{error}</div>}
-      </div>
-
-      <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-        <div className="card2">
-          <div className="card-title">New game</div>
-          <div className="field-row">
-            <span>Budget (max moves)</span>
-            <input type="number" value={budget} min={1} max={100} onChange={(e) => setBudget(+e.target.value)} />
-          </div>
-          <div className="field-row">
-            <span>Seed (optional)</span>
-            <input type="number" value={seed} onChange={(e) => setSeed(e.target.value)} />
-          </div>
-          <button className="primary" style={{ width: "100%" }} onClick={() => startNewGame()} disabled={busy}>
-            Start new game
-          </button>
+        <div className="board-status" data-tour="play-status">
+          {pos ? (
+            <>
+              <Badge tone="neutral">White to move</Badge>
+              <span>Moves left <strong>{pos.moves_left}</strong></span>
+              <span>Return so far <strong>G = {game.ret.toFixed(4)}</strong></span>
+            </>
+          ) : game.outcome ? (
+            <>
+              <Badge tone={game.outcome === "checkmate" ? "success" : "fail"}>{OUTCOME_TEXT[game.outcome]}</Badge>
+              <span>Final return <strong>G = {game.ret.toFixed(4)}</strong></span>
+            </>
+          ) : null}
         </div>
+        <div className="legend">
+          <span><i className="swatch" style={{ background: "rgba(204,138,44,0.55)" }} /> White's last move</span>
+          <span><i className="swatch" style={{ background: "rgba(22,42,75,0.30)" }} /> Black's reply</span>
+          <span><i className="swatch dot" /> legal destination</span>
+        </div>
+        <ErrorText>{error}</ErrorText>
+      </Card>
 
-        <div className="card2">
-          <div className="card-title">White is controlled by</div>
-          <div className="field-row">
-            <label><input type="radio" checked={controller === "human"} onChange={() => setController("human")} /> You</label>
-            <label><input type="radio" checked={controller === "agent"} onChange={() => setController("agent")} /> Agent</label>
+      <div className="side">
+        <Card title="New game" tone="soft" tour="play-newgame">
+          <Field label="Move budget" info="How many White moves are allowed before the game counts as a failure (the project uses 40).">
+            <NumberInput value={budget} min={1} max={40} onChange={setBudget} />
+          </Field>
+          <Field label="Seed (optional)" info="Same seed = same starting position, so you can replay a game.">
+            <NumberInput value={seed} onChange={setSeed} placeholder="random" />
+          </Field>
+          <Button block onClick={startNewGame} disabled={busy}>Start new game</Button>
+        </Card>
+
+        <Card title="The agent (White)" tone="soft" tour="play-agent">
+          <Field label="Agent" tour="play-source"
+            info="Optimal (DP) reads the exact best move computed from the rules. Trained (MC) reads the move a Monte Carlo agent learned by playing.">
+            <Segmented
+              value={source}
+              onChange={(v) => { setSource(v); setRunning(false); setSuggestion(null); }}
+              options={[{ value: "dp", label: "Optimal (DP)" }, { value: "mc", label: "Trained (MC)" }]}
+            />
+          </Field>
+          {source === "mc" && <JobPicker />}
+          {agentProblem && <Callout tone="warn">{agentProblem}</Callout>}
+
+          <div className="button-row" data-tour="play-controls">
+            <Button
+              variant={running ? "secondary" : "primary"}
+              onClick={() => setRunning((r) => !r)}
+              disabled={!agentAvailable || !pos}
+            >
+              {running ? "⏸ Pause" : "▶ Let the agent play"}
+            </Button>
+            <Button variant="secondary" onClick={agentStep} disabled={!agentAvailable || !pos || running || busy}>
+              Next agent move
+            </Button>
+            <Button variant="secondary" onClick={() => askAgent().catch((e) => setError(e.message))} disabled={!agentAvailable || !pos || running || busy}>
+              Hint
+            </Button>
           </div>
-          <div className="field-row">
-            <span>Agent source</span>
-            <select value={source} onChange={(e) => setSource(e.target.value)}>
-              <option value="dp">Optimal (DP)</option>
-              <option value="mc">Trained (Monte Carlo)</option>
-            </select>
-          </div>
-          {source === "dp" && !dpReady && (
-            <div style={{ fontSize: 12, color: "var(--rust)" }}>DP solution not cached yet — see Results Dashboard / Explore tab to solve it.</div>
-          )}
-          {source === "mc" && <JobPicker value={jobId} onChange={setJobId} />}
-          <div style={{ fontSize: 12, color: "var(--muted)", marginTop: 6 }}>
-            {source === "dp"
-              ? "Optimal (DP): reads the move from π*, computed exactly by backward induction over all 144,508 boards and every remaining budget h. It cannot be beaten on average."
-              : "Trained (MC): reads the greedy move from a Q-table learned only by playing games (no model). Its quality depends on how many episodes the job has run — a few thousand episodes is still close to random."}
-          </div>
-          {controller === "human" && (
-            <button className="secondary" style={{ width: "100%", marginTop: 6 }} onClick={() => requestAgentMove(false)} disabled={busy || !position}>
-              Suggest a move
-            </button>
-          )}
+          <Field label="Speed" tour="play-speed">
+            <Select value={speed} onChange={setSpeed}
+              options={[{ value: "1200", label: "Slow" }, { value: "600", label: "Normal" }, { value: "150", label: "Fast" }]} />
+          </Field>
+
           {suggestion && (
-            <div className="key-rule" style={{ marginTop: 10 }}>
-              Suggested: {suggestion.piece} → {suggestion.dest_name} (value {suggestion.value?.toFixed(3)})
-            </div>
+            <Callout tone="info" tour="play-hint">
+              Agent's choice: <strong>{moveLabel(suggestion.piece, suggestion.dest_name)}</strong> — {source === "dp"
+                ? <>value {suggestion.value.toFixed(3)} = <strong>{valueMeaning(suggestion.value)}</strong> ({valueTag(suggestion.value)}).</>
+                : <>learned value {suggestion.value.toFixed(3)} (an estimate: ≈ {valueTag(suggestion.value)}).</>}
+            </Callout>
           )}
-        </div>
+        </Card>
 
-        <div className="card2">
-          <div className="card-title">Move log</div>
-          <div className="log-list">
-            {log.map((line, i) => (
-              <div key={i}>{line}</div>
-            ))}
-          </div>
-        </div>
+        <Card title="Game record" tone="soft" tour="play-log">
+          {record.length === 0 ? (
+            <div className="muted">No moves yet. Click your king or queen, then a highlighted square.</div>
+          ) : (
+            <ol className="record">
+              {record.map((line, i) => <li key={i}>{line}</li>)}
+            </ol>
+          )}
+        </Card>
       </div>
     </div>
   );

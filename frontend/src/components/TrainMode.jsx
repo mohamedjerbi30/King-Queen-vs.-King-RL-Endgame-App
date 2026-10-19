@@ -1,8 +1,11 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   ResponsiveContainer, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ReferenceLine,
 } from "recharts";
 import { api } from "../api.js";
+import { usePersistentState } from "../lib/storage.js";
+import { useSelectedJob } from "./JobPicker.jsx";
+import { Badge, Button, Callout, Card, ErrorText, Field, NumberInput, ProgressBar, Segmented, StatRow } from "../ui/index.jsx";
 
 const V_STAR = 0.927126;
 
@@ -10,63 +13,66 @@ const PRESETS = {
   official: { label: "Report settings", alpha: 0.01, epsilon: 0.05, q0: 1.0, episodes: 200000,
     note: "α = 0.01, ε = 0.05, Q0 = +1 — exactly the presentation's algorithm. Slow at this scale: the optimistic Q0 makes the agent try every move several times before it can prefer good ones." },
   fast: { label: "Fast demo", alpha: 0.1, epsilon: 0.05, q0: 0.0, episodes: 50000,
-    note: "α = 0.1, Q0 = 0 — learns visibly within ~30k episodes, but explores less, so it plateaus with slower mates. Not the report's configuration." },
+    note: "α = 0.1, Q0 = 0 — learns visibly within ~30k episodes, but explores less, so it mates more slowly. Not the report's configuration." },
+  custom: { label: "Custom", note: "Your own values — change any field below." },
 };
 
 export default function TrainMode() {
-  const [episodes, setEpisodes] = useState(PRESETS.official.episodes);
-  const [alpha, setAlpha] = useState(0.01);
-  const [epsilon, setEpsilon] = useState(0.05);
-  const [q0, setQ0] = useState(1.0);
-  const [budget, setBudget] = useState(40);
-  const [preset, setPreset] = useState("official");
-  const [job, setJob] = useState(null); // latest status summary
+  const [preset, setPreset] = usePersistentState("train.preset", "official");
+  const [params, setParams] = usePersistentState("train.params", { episodes: 200000, alpha: 0.01, epsilon: 0.05, q0: 1.0, budget: 40 });
+  const [jobId, setJobId] = useSelectedJob();
+  const [job, setJob] = useState(null);
   const [error, setError] = useState(null);
   const pollRef = useRef(null);
 
-  useEffect(() => () => clearInterval(pollRef.current), []);
+  const setParam = (k) => (v) => {
+    setParams({ ...params, [k]: v });
+    setPreset("custom");
+  };
 
   function applyPreset(key) {
-    const p = PRESETS[key];
     setPreset(key);
-    setAlpha(p.alpha);
-    setEpsilon(p.epsilon);
-    setQ0(p.q0);
-    setEpisodes(p.episodes);
+    if (key === "custom") return;
+    const p = PRESETS[key];
+    setParams({ ...params, alpha: p.alpha, epsilon: p.epsilon, q0: p.q0, episodes: p.episodes });
   }
 
-  function poll(jobId) {
+  const poll = useCallback((id) => {
     clearInterval(pollRef.current);
-    pollRef.current = setInterval(async () => {
+    const tick = async () => {
       try {
-        const s = await api.trainStatus(jobId);
+        const s = await api.trainStatus(id);
         setJob(s);
         if (s.status !== "running" && s.eval_status !== "running") clearInterval(pollRef.current);
-      } catch (e) {
-        setError(e.message);
+      } catch {
+        // The server no longer knows this job (e.g. it was restarted).
         clearInterval(pollRef.current);
+        setJob(null);
       }
-    }, 800);
-  }
+    };
+    tick();
+    pollRef.current = setInterval(tick, 800);
+  }, []);
+
+  // Re-attach to the selected job whenever it changes (also after a reload or tab switch).
+  useEffect(() => {
+    if (jobId) poll(jobId);
+    else setJob(null);
+    return () => clearInterval(pollRef.current);
+  }, [jobId, poll]);
 
   async function start() {
     setError(null);
     try {
-      const res = await api.trainStart({ episodes, alpha, epsilon, q0, budget });
-      setJob({ job_id: res.job_id, status: "running", episodes_done: 0, episodes_target: episodes, curve: [], evaluations: [] });
-      poll(res.job_id);
+      const res = await api.trainStart(params);
+      setJobId(res.job_id);
     } catch (e) {
       setError(e.message);
     }
   }
 
   async function stop() {
-    if (!job) return;
-    try {
-      await api.trainStop(job.job_id);
-    } catch (e) {
-      setError(e.message);
-    }
+    if (job) await api.trainStop(job.job_id).catch((e) => setError(e.message));
   }
 
   async function evaluate() {
@@ -80,107 +86,102 @@ export default function TrainMode() {
     }
   }
 
+  const running = job?.status === "running";
   const curve = job?.curve ?? [];
   const evals = job?.evaluations ?? [];
-  const latest = curve.length ? curve[curve.length - 1] : null;
   const lastEval = evals.length ? evals[evals.length - 1] : null;
-
-  // Merge behaviour points and exact greedy evaluations on one episode axis.
   const merged = [
     ...curve.map((c) => ({ episode: c.episode, behaviour: c.mean_return })),
     ...evals.map((e) => ({ episode: e.episodes, greedy: e.mean_return })),
   ].sort((a, b) => a.episode - b.episode);
 
+  // Rough time left from the average speed so far.
+  let eta = null;
+  if (running && job.episodes_done > 0 && job.started_at) {
+    const rate = job.episodes_done / (Date.now() / 1000 - job.started_at);
+    eta = Math.max(0, Math.round((job.episodes_target - job.episodes_done) / rate));
+  }
+
   return (
-    <div className="panel-grid">
-      <div className="card">
-        <div className="card-title">Learning curve (this run)</div>
+    <div className="page-grid">
+      <Card title="Learning curve" tour="train-chart">
         {merged.length > 0 ? (
-          <ResponsiveContainer width="100%" height={280}>
+          <ResponsiveContainer width="100%" height={300}>
             <LineChart data={merged} margin={{ top: 8, right: 16, left: -10, bottom: 0 }}>
               <CartesianGrid stroke="rgba(22,42,75,0.08)" />
-              <XAxis dataKey="episode" type="number" domain={[0, "dataMax"]} tick={{ fontSize: 11 }} />
+              <XAxis dataKey="episode" type="number" domain={[0, "dataMax"]} tick={{ fontSize: 11 }}
+                tickFormatter={(v) => (v >= 1000 ? `${Math.round(v / 1000)}k` : v)} />
               <YAxis tick={{ fontSize: 11 }} domain={[-1, 1]} />
-              <Tooltip formatter={(v) => v.toFixed(3)} />
-              <Legend />
-              <ReferenceLine y={V_STAR} stroke="#CC8A2C" strokeDasharray="5 4" label={{ value: "v* = 0.927", fontSize: 11, fill: "#CC8A2C", position: "insideTopLeft" }} />
-              <Line type="monotone" dataKey="behaviour" name="Training return (ε-greedy, last 500 ep.)" stroke="#162A4B" dot={false} strokeWidth={2} connectNulls />
-              <Line type="monotone" dataKey="greedy" name="Greedy policy, exact evaluation" stroke="#3C6B5C" strokeWidth={0} dot={{ r: 5, fill: "#3C6B5C" }} connectNulls={false} isAnimationActive={false} />
+              <Tooltip formatter={(v) => v.toFixed(3)} labelFormatter={(v) => `${v.toLocaleString()} episodes`} />
+              <Legend wrapperStyle={{ fontSize: 12 }} />
+              <ReferenceLine y={V_STAR} stroke="#CC8A2C" strokeDasharray="5 4"
+                label={{ value: "best possible v* = 0.927", fontSize: 11, fill: "#CC8A2C", position: "insideTopLeft" }} />
+              <Line type="monotone" dataKey="behaviour" name="Training games (with exploration)" stroke="#162A4B" dot={false} strokeWidth={2} connectNulls isAnimationActive={false} />
+              <Line type="monotone" dataKey="greedy" name="Exact test of the learned policy" stroke="#3C6B5C" strokeWidth={0} dot={{ r: 5, fill: "#3C6B5C" }} isAnimationActive={false} />
             </LineChart>
           </ResponsiveContainer>
         ) : (
-          <div style={{ padding: 60, textAlign: "center", color: "var(--muted)" }}>
-            Start a training run to see the learning curve build live.
-          </div>
+          <div className="empty">Choose settings on the right and press <strong>Start training</strong> — the curve builds live here.</div>
         )}
+        <Callout tone="info" tour="train-reading">
+          <strong>Two measurements.</strong> The <strong>dark line</strong> is the average result of the last 500 training games —
+          noisy, because the agent still explores 5% of the time. The <strong>green dots</strong> test what it has learned so far,
+          exactly, on all 144,508 starting positions with no exploration — directly comparable with the best possible 0.927.
+        </Callout>
+      </Card>
 
-        <div className="key-rule">
-          Two different measurements. The <strong>line</strong> is the average return of the last 500
-          training episodes — it includes ε-exploration and random starting boards, so it is noisy and
-          slightly pessimistic. The <strong>green dots</strong> are exact evaluations of the current greedy
-          policy (no exploration) over all 144,508 starting boards, using the DP model — the same measure
-          as v* = 0.927. Click "Evaluate exactly" at any time; it also runs automatically when training ends.
-        </div>
-      </div>
-
-      <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-        <div className="card2">
-          <div className="card-title">Training parameters</div>
-          <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
-            {Object.entries(PRESETS).map(([k, p]) => (
-              <button key={k} className={preset === k ? "primary" : "secondary"} style={{ flex: 1 }} onClick={() => applyPreset(k)}>
-                {p.label}
-              </button>
-            ))}
+      <div className="side">
+        <Card title="Settings" tone="soft" tour="train-settings">
+          <Segmented value={preset} onChange={applyPreset} tour="train-presets"
+            options={Object.entries(PRESETS).map(([k, p]) => ({ value: k, label: p.label }))} />
+          <div className="field-hint">{PRESETS[preset].note}</div>
+          <Field label="Episodes" info="Number of training games. Each game starts from a random position.">
+            <NumberInput value={params.episodes} min={100} max={500000} step={1000} onChange={setParam("episodes")} />
+          </Field>
+          <Field label="α (step size)" info="How far each Q-value moves toward a newly observed return: Q ← Q + α(G − Q).">
+            <NumberInput value={params.alpha} step={0.001} min={0.0001} max={1} onChange={setParam("alpha")} />
+          </Field>
+          <Field label="ε (exploration)" info="Probability of playing a random legal move instead of the best known one during training.">
+            <NumberInput value={params.epsilon} step={0.01} min={0} max={1} onChange={setParam("epsilon")} />
+          </Field>
+          <Field label="Q0 (initial value)" info="Value given to moves never tried. +1 is optimistic: untried moves look perfect, so the agent tries them all.">
+            <NumberInput value={params.q0} step={0.1} min={-1} max={1} onChange={setParam("q0")} />
+          </Field>
+          <Field label="Move budget" info="Maximum White moves per game (the project uses 40).">
+            <NumberInput value={params.budget} min={1} max={40} onChange={setParam("budget")} />
+          </Field>
+          <div className="button-row" data-tour="train-buttons">
+            <Button onClick={start} disabled={running}>▶ Start training</Button>
+            <Button variant="secondary" onClick={stop} disabled={!running}>■ Stop</Button>
           </div>
-          <div style={{ fontSize: 12, color: "var(--muted)", marginBottom: 8 }}>{PRESETS[preset].note}</div>
-          <div className="field-row"><span>Episodes</span><input type="number" value={episodes} min={100} max={500000} onChange={(e) => setEpisodes(+e.target.value)} /></div>
-          <div className="field-row"><span>Alpha (step size)</span><input type="number" step="0.001" value={alpha} onChange={(e) => setAlpha(+e.target.value)} /></div>
-          <div className="field-row"><span>Epsilon (exploration)</span><input type="number" step="0.01" value={epsilon} onChange={(e) => setEpsilon(+e.target.value)} /></div>
-          <div className="field-row"><span>Q0 (initial Q)</span><input type="number" step="0.1" value={q0} onChange={(e) => setQ0(+e.target.value)} /></div>
-          <div className="field-row"><span>Budget</span><input type="number" value={budget} onChange={(e) => setBudget(+e.target.value)} /></div>
-          <div style={{ display: "flex", gap: 8, marginTop: 4 }}>
-            <button className="primary" style={{ flex: 1 }} onClick={start} disabled={job?.status === "running"}>
-              Start training
-            </button>
-            <button className="secondary" style={{ flex: 1 }} onClick={stop} disabled={job?.status !== "running"}>
-              Stop
-            </button>
-          </div>
-          {error && <div style={{ color: "var(--rust)", fontSize: 12.5, marginTop: 8 }}>{error}</div>}
-        </div>
+          <ErrorText>{error}</ErrorText>
+        </Card>
 
         {job && (
-          <div className="card2">
-            <div className="card-title">Job status</div>
-            <div className="stat-row"><span className="label">Job id</span><span className="value">{job.job_id}</span></div>
-            <div className="stat-row"><span className="label">Status</span><span className="value">{job.status}</span></div>
-            <div className="stat-row"><span className="label">Episodes</span><span className="value">{job.episodes_done?.toLocaleString()} / {job.episodes_target?.toLocaleString()}</span></div>
-            <div className="stat-row"><span className="label">Q-table entries (state, move)</span><span className="value">{job.qtable_size?.toLocaleString()}</span></div>
-            {latest && (
-              <>
-                <div className="stat-row"><span className="label">Training return (window)</span><span className="value">{latest.mean_return.toFixed(3)}</span></div>
-                <div className="stat-row"><span className="label">Training mate rate (window)</span><span className="value">{(latest.mate_rate * 100).toFixed(1)}%</span></div>
-              </>
-            )}
-            <button className="secondary" style={{ width: "100%", marginTop: 8 }} onClick={evaluate} disabled={job.eval_status === "running"}>
-              {job.eval_status === "running" ? "Evaluating over 144,508 boards…" : "Evaluate greedy policy exactly"}
-            </button>
-            {lastEval && (
-              <>
-                <div className="card-title" style={{ marginTop: 12 }}>Exact evaluation @ {lastEval.episodes.toLocaleString()} episodes</div>
-                <div className="stat-row"><span className="label">Mean return (v* = {lastEval.v_star.toFixed(4)})</span><span className="value">{lastEval.mean_return.toFixed(4)}</span></div>
-                <div className="stat-row"><span className="label">% of optimal return</span><span className="value">{lastEval.pct_of_optimal.toFixed(1)}%</span></div>
-                <div className="stat-row"><span className="label">Mate rate</span><span className="value">{(lastEval.mate_rate * 100).toFixed(2)}%</span></div>
-                <div className="stat-row"><span className="label">Mean moves to mate (π*: 4.70)</span><span className="value">{lastEval.mean_moves_to_mate?.toFixed(2) ?? "—"}</span></div>
-                <div className="stat-row"><span className="label">Boards where it plays an optimal move</span><span className="value">{(lastEval.agreement * 100).toFixed(1)}%</span></div>
-                <div className="stat-row"><span className="label">(state, move) pairs ever tried</span><span className="value">{(lastEval.coverage * 100).toFixed(1)}%</span></div>
-              </>
-            )}
-            <div className="key-rule" style={{ marginTop: 10 }}>
-              This job now appears in the job list of Play and Explore (source: Monte Carlo).
+          <Card title="This run" tone="soft" tour="train-status">
+            <div className="board-status">
+              <Badge tone={running ? "pending" : job.status === "done" ? "success" : "neutral"}>{job.status}</Badge>
+              <span className="muted">agent {job.job_id.slice(0, 6)}</span>
             </div>
-          </div>
+            <ProgressBar value={job.episodes_done} max={job.episodes_target} label="training progress" />
+            <StatRow label="Episodes" value={`${job.episodes_done.toLocaleString()} / ${job.episodes_target.toLocaleString()}${eta !== null ? ` · ~${eta}s left` : ""}`} />
+            <StatRow label="Q-table entries" value={job.qtable_size.toLocaleString()} info="Number of (position, move) pairs the agent has a value for." />
+            <Button variant="secondary" block onClick={evaluate} disabled={job.eval_status === "running"} tour="train-evaluate">
+              {job.eval_status === "running" ? "Testing on 144,508 positions…" : "Test the learned policy now"}
+            </Button>
+            {lastEval && (
+              <div data-tour="train-results">
+                <div className="subhead">Exact test after {lastEval.episodes.toLocaleString()} episodes</div>
+                <StatRow label="Mean return" value={`${lastEval.mean_return.toFixed(4)} (best 0.9271)`} />
+                <StatRow label="Share of the best possible" value={`${lastEval.pct_of_optimal.toFixed(1)}%`} />
+                <StatRow label="Games won (mate)" value={`${(lastEval.mate_rate * 100).toFixed(2)}%`} />
+                <StatRow label="Moves to mate" value={`${lastEval.mean_moves_to_mate?.toFixed(2) ?? "—"} (best 4.70)`} />
+                <StatRow label="Positions where it plays a best move" value={`${(lastEval.agreement * 100).toFixed(1)}%`} />
+                <StatRow label="(position, move) pairs tried" value={`${(lastEval.coverage * 100).toFixed(1)}%`} />
+              </div>
+            )}
+            <div className="field-hint">This agent is now selectable in Play and Explore (Trained / Learned).</div>
+          </Card>
         )}
       </div>
     </div>

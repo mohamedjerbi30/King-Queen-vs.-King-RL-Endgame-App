@@ -275,6 +275,7 @@ class TrainingJob:
                 "status": self.status,
                 "episodes_done": self.episodes_done,
                 "episodes_target": self.episodes_target,
+                "started_at": self.started_at,
                 "qtable_size": self.agent.q_table_size(),
                 "curve": list(self.curve),
                 "evaluations": list(self.evaluations),

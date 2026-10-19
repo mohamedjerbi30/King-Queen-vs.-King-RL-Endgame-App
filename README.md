@@ -76,7 +76,7 @@ that directory with any static file server, pointed at a reachable Flask API
    destination), or let an agent (exact DP or a trained Monte Carlo job) play
    White while you watch. Black's king always replies automatically,
    following the engine's rules.
-2. **Explore Q-table** — type in any legal board (king/queen/king squares,
+2. **Explore values** — type in any legal board (king/queen/king squares,
    moves remaining), or click squares to place pieces, and see every legal
    move's value drawn on the board: exact q\*(s, a) from DP (all tied optimal
    moves starred, mate/stalemate moves flagged), or a training job's learned
@@ -88,9 +88,15 @@ that directory with any static file server, pointed at a reachable Flask API
    boards (mean return, % of v\*, mate rate, moves to mate, agreement with
    π\*), run on demand and automatically when training ends. Jobs then show
    up in the job picker of Play and Explore.
-4. **Results Dashboard** — the report's numbers, with the baselines and π\*
+4. **Results** — the report's numbers, with the baselines and π\*
    re-evaluated exactly on the server (uniform random, "safe" random, π\*),
    the real learning curves measured with this app, and a DP-vs-MC summary.
+
+## Interface notes
+
+- **Guide:** every page opens a step-by-step guide on its first visit (it spotlights each control and explains it); replay it with **? Guide**, or tick "show every time".
+- **Saved in your browser:** games, positions, settings, the selected trained agent and guide progress are stored in `localStorage` (keys prefixed `kqk.`). **Reset saved data** in the header clears them.
+- **Reusable UI components** live in `frontend/src/ui/` (Button, Select, Field, Segmented, Card…); helpers in `frontend/src/lib/` (storage, notation, "mate in N"); the guide in `frontend/src/tour/`.
 
 ## Exact policy evaluation
 

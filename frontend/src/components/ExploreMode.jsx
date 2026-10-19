@@ -1,72 +1,60 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import ChessBoard from "./ChessBoard.jsx";
-import JobPicker from "./JobPicker.jsx";
+import JobPicker, { useJobs, useSelectedJob } from "./JobPicker.jsx";
 import { api } from "../api.js";
+import { usePersistentState } from "../lib/storage.js";
+import { GRADE, grade, moveLabel, positionError, sqFromName, sqName, valueMeaning, valueTag } from "../lib/chess.js";
+import { Badge, Button, Callout, Card, ErrorText, Field, NumberInput, Segmented, Select, TextInput } from "../ui/index.jsx";
 
-const FILES = "abcdefgh";
-const sqName = (sq) => `${FILES[sq % 8]}${Math.floor(sq / 8) + 1}`;
-const fr = (sq) => [sq % 8, Math.floor(sq / 8)];
+const EXAMPLES = [
+  { value: "", label: "Load an example position…" },
+  { value: "c6,e4,a8", label: "Mate in 2 — six equally good moves (Kc6 Qe4 vs Ka8)" },
+  { value: "e1,d1,e8", label: "Trap — two queen moves lose the queen (Ke1 Qd1 vs Ke8)" },
+  { value: "d4,b2,g8", label: "The presentation's example (Kd4 Qb2 vs Kg8)" },
+  { value: "f6,a7,h8", label: "Mate in 1 next to a stalemate trap (Kf6 Qa7 vs Kh8)" },
+];
 
-function sqFromName(name) {
-  const f = FILES.indexOf((name || "")[0]);
-  const r = parseInt((name || "").slice(1), 10) - 1;
-  if (f < 0 || !(r >= 0 && r < 8)) return null;
-  return r * 8 + f;
-}
+const glyph = (piece) => (piece === "K" ? "♔" : "♕");
 
-const adjacent = (a, b) => {
-  const [fa, ra] = fr(a), [fb, rb] = fr(b);
-  return Math.max(Math.abs(fa - fb), Math.abs(ra - rb)) === 1;
-};
-
-// Does the queen on q attack square t, with `blocker` possibly in the way?
-function queenAttacks(q, t, blocker) {
-  const [fq, rq] = fr(q), [ft, rt] = fr(t);
-  const df = Math.sign(ft - fq), dr = Math.sign(rt - rq);
-  if (!(fq === ft || rq === rt || Math.abs(ft - fq) === Math.abs(rt - rq))) return false;
-  let f = fq + df, r = rq + dr;
-  while (f !== ft || r !== rt) {
-    if (r * 8 + f === blocker) return false;
-    f += df;
-    r += dr;
+/** Plain-language summary of a list of graded moves. */
+function summarise(rows, source) {
+  if (!rows.length) return null;
+  const count = (g) => rows.filter((r) => r.grade === g).length;
+  const best = rows[0];
+  const parts = [];
+  const nBest = count("best");
+  if (source === "mc") {
+    parts.push(`The agent would play ${moveLabel(best.piece, best.dest_name)} (learned value ${best.q.toFixed(2)}).`);
+    const unknown = count("unknown");
+    if (unknown) parts.push(`${unknown} of ${rows.length} moves were never tried during training, so the agent knows nothing about them.`);
+    return parts.join(" ");
   }
-  return true;
+  parts.push(`${nBest} move${nBest > 1 ? "s" : ""} ${nBest > 1 ? "are" : "is"} best: ${valueMeaning(best.q)}.`);
+  const close = count("close"), slower = count("slower") + count("poor"), bad = count("blunder");
+  if (close) parts.push(`${close} ${close > 1 ? "are" : "is"} about one move slower.`);
+  if (slower) parts.push(`${slower} ${slower > 1 ? "are" : "is"} clearly slower.`);
+  parts.push(bad ? `${bad} ${bad > 1 ? "are blunders" : "is a blunder"} (red).` : "No move here is a blunder.");
+  return parts.join(" ");
 }
-
-// Same rules as the backend: a White-to-move state needs distinct squares,
-// non-adjacent kings, and Black NOT in check.
-function positionError(wk, wq, bk) {
-  if (wk === null || wq === null || bk === null) return "Enter three valid squares (a1 … h8).";
-  if (new Set([wk, wq, bk]).size !== 3) return "Two pieces are on the same square.";
-  if (adjacent(wk, bk)) return "The two kings are adjacent — illegal.";
-  if (queenAttacks(wq, bk, wk)) return "Black is in check — that would be Black's turn, not White's.";
-  return null;
-}
-
-// q in [-1, 1] -> rust (bad) / gold (middling) / sage (good)
-function qColor(q) {
-  if (q >= 0.8) return "#3C6B5C";
-  if (q >= 0) return "#CC8A2C";
-  return "#B1503E";
-}
-
-const KIND_LABEL = { checkmate: "mate", stalemate: "stalemate" };
 
 export default function ExploreMode() {
-  // Default = the position from the "State" slide: Kc6, Qe4 vs Ka8 (White to move, legal).
-  const [wkName, setWkName] = useState("c6");
-  const [wqName, setWqName] = useState("e4");
-  const [bkName, setBkName] = useState("a8");
-  const [movesLeft, setMovesLeft] = useState(40);
-  const [setupMode, setSetupMode] = useState(false);
-  const [placing, setPlacing] = useState("wk");
-  const [selectedPiece, setSelectedPiece] = useState(null); // 'K' | 'Q' while choosing a move
+  const [wkName, setWkName] = usePersistentState("explore.wk", "c6");
+  const [wqName, setWqName] = usePersistentState("explore.wq", "e4");
+  const [bkName, setBkName] = usePersistentState("explore.bk", "a8");
+  const [h, setH] = usePersistentState("explore.h", 40);
+  const [source, setSource] = usePersistentState("explore.source", "dp");
+  const [mode, setMode] = usePersistentState("explore.mode", "move");
+  const [placing, setPlacing] = usePersistentState("explore.placing", "wk");
+  const [history, setHistory] = usePersistentState("explore.history", []);
+  const [jobId] = useSelectedJob();
+  const { jobs } = useJobs();
+
+  const [selected, setSelected] = useState(null);
   const [lastMove, setLastMove] = useState(null);
-  const [source, setSource] = useState("dp");
-  const [jobId, setJobId] = useState("");
+  const [blackMove, setBlackMove] = useState(null);
   const [dpStatus, setDpStatus] = useState(null);
-  const [rows, setRows] = useState([]);
-  const [value, setValue] = useState(null);
+  const [dpRows, setDpRows] = useState([]);
+  const [mcRows, setMcRows] = useState([]);
   const [canonical, setCanonical] = useState(null);
   const [message, setMessage] = useState(null);
   const [error, setError] = useState(null);
@@ -75,252 +63,265 @@ export default function ExploreMode() {
   const wk = sqFromName(wkName), wq = sqFromName(wqName), bk = sqFromName(bkName);
   const posError = positionError(wk, wq, bk);
   const dpReady = dpStatus?.status === "ready";
+  const mcAvailable = jobs.some((j) => j.job_id === jobId);
+  const needDp = source !== "mc", needMc = source !== "dp";
 
   useEffect(() => {
     api.dpStatus().then(setDpStatus).catch((e) => setError(e.message));
   }, []);
 
-  async function solveDp() {
+  const load = useCallback(async () => {
+    setError(null);
+    if (posError) return;
     setBusy(true);
     try {
-      await api.dpSolve(40);
-      const poll = setInterval(async () => {
-        const s = await api.dpStatus();
-        setDpStatus(s);
-        if (s.status === "ready" || s.status === "error") clearInterval(poll);
-      }, 1500);
+      if (needDp && dpReady) {
+        const res = await api.dpQuery(wk, wq, bk, h || 40);
+        setDpRows(res.qvalues);
+      } else setDpRows([]);
+      if (needMc && mcAvailable) {
+        const res = await api.trainQtable(jobId, wk, wq, bk);
+        setMcRows(res.qvalues);
+        setCanonical(res.canonical);
+      } else setMcRows([]);
     } catch (e) {
       setError(e.message);
     } finally {
       setBusy(false);
     }
+  }, [posError, needDp, needMc, dpReady, mcAvailable, wk, wq, bk, h, jobId]);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  // Rows for the active source, graded against the best move of the position.
+  const rows = useMemo(() => {
+    if (posError) return [];
+    if (source === "mc") {
+      const best = mcRows.length ? mcRows[0].q : 0;
+      return mcRows.map((r) => ({ ...r, grade: r.visits === 0 ? "unknown" : Math.abs(r.q - best) < 1e-12 ? "best" : grade(r.q, best) }));
+    }
+    const best = dpRows.length ? dpRows[0].q : 0;
+    const mcByMove = Object.fromEntries(mcRows.map((r) => [`${r.piece}${r.dest}`, r]));
+    return dpRows.map((r) => ({ ...r, grade: grade(r.q, best), mc: mcByMove[`${r.piece}${r.dest}`] }));
+  }, [source, dpRows, mcRows, posError]);
+
+  const mcChoice = source === "compare" && mcRows.length ? mcRows[0] : null;
+  const mcChoiceRow = mcChoice ? rows.find((r) => r.piece === mcChoice.piece && r.dest === mcChoice.dest) : null;
+
+  function setPosition(w, q, b) {
+    setWkName(sqName(w));
+    setWqName(sqName(q));
+    setBkName(sqName(b));
   }
 
-  const query = useCallback(async () => {
-    setError(null);
-    if (posError) {
-      setRows([]);
-      setValue(null);
-      return;
-    }
-    if (source === "dp" && !dpReady) return;
-    if (source === "mc" && !jobId) {
-      setError("No training job yet — start one in Live Training.");
-      return;
-    }
-    setBusy(true);
-    try {
-      if (source === "dp") {
-        const res = await api.dpQuery(wk, wq, bk, movesLeft);
-        setValue(res.value);
-        setRows(res.qvalues);
-        setCanonical(null);
-      } else {
-        const res = await api.trainQtable(jobId, wk, wq, bk);
-        const best = res.qvalues.length ? res.qvalues[0].q : null;
-        setRows(res.qvalues.map((r) => ({ ...r, optimal: Math.abs(r.q - best) < 1e-12 })));
-        setValue(best);
-        setCanonical(res.canonical);
-      }
-    } catch (e) {
-      setError(e.message);
-      setRows([]);
-      setValue(null);
-    } finally {
-      setBusy(false);
-    }
-  }, [posError, source, dpReady, jobId, wk, wq, bk, movesLeft]);
-
-  // Re-inspect automatically whenever the position or the source changes.
-  useEffect(() => {
-    query();
-  }, [query]);
-
-  function resetTo(newWk, newWq, newBk) {
-    setWkName(sqName(newWk));
-    setWqName(sqName(newWq));
-    setBkName(sqName(newBk));
-    setSelectedPiece(null);
+  function loadExample(v) {
+    if (!v) return;
+    const [a, b, c] = v.split(",");
+    setWkName(a);
+    setWqName(b);
+    setBkName(c);
+    setH(40);
+    setHistory([]);
+    setLastMove(null);
+    setBlackMove(null);
+    setMessage(null);
+    setSelected(null);
   }
 
   async function playMove(piece, dest) {
+    if (busy || posError) return;
     setBusy(true);
     setError(null);
     try {
-      const res = await api.step({ wk, wq, bk, moves_left: movesLeft }, piece, dest);
-      const from = piece === "K" ? wk : wq;
-      setLastMove({ from, to: dest });
-      const label = `${piece === "K" ? "♔" : "♕"}${sqName(dest)}`;
+      const res = await api.step({ wk, wq, bk, moves_left: h || 40 }, piece, dest);
+      setHistory([...history, { wk: wkName, wq: wqName, bk: bkName, h }]);
+      setLastMove({ from: piece === "K" ? wk : wq, to: dest });
       if (res.done) {
-        setMessage(`${label} → game over: ${res.outcome} (reward ${res.reward}). Set up a new position to continue.`);
+        setMessage(`${moveLabel(piece, dest)} ended the game: ${res.outcome.replace("_", " ")} (reward ${res.reward}). Use Undo or load another position.`);
         if (piece === "K") setWkName(sqName(dest));
         else setWqName(sqName(dest));
-        setRows([]);
-        setSetupMode(true);
+        setBlackMove(null);
       } else {
-        setMessage(`You played ${label}; Black replied ♚${res.black_reply}. Values below are for the new position.`);
-        resetTo(res.position.wk, res.position.wq, res.position.bk);
-        setMovesLeft(res.position.moves_left);
+        setMessage(`You played ${moveLabel(piece, dest)}; Black answered K${res.black_reply}. The values now describe the new position.`);
+        setBlackMove({ from: bk, to: res.position.bk });
+        setPosition(res.position.wk, res.position.wq, res.position.bk);
+        setH(res.position.moves_left);
       }
     } catch (e) {
       setError(e.message);
     } finally {
       setBusy(false);
-      setSelectedPiece(null);
+      setSelected(null);
     }
+  }
+
+  function undo() {
+    const prev = history[history.length - 1];
+    if (!prev) return;
+    setHistory(history.slice(0, -1));
+    setWkName(prev.wk);
+    setWqName(prev.wq);
+    setBkName(prev.bk);
+    setH(prev.h);
+    setLastMove(null);
+    setBlackMove(null);
+    setMessage(null);
   }
 
   function handleSquareClick(sq) {
     if (busy) return;
-    if (setupMode) {
+    if (mode === "setup") {
       const others = { wk: [wq, bk], wq: [wk, bk], bk: [wk, wq] }[placing];
-      if (others.includes(sq)) {
-        setError("That square is occupied — pick an empty square.");
-        return;
-      }
+      if (others.includes(sq)) return setError("That square is taken — choose an empty square.");
+      setError(null);
       ({ wk: setWkName, wq: setWqName, bk: setBkName })[placing](sqName(sq));
+      setHistory([]);
       setLastMove(null);
+      setBlackMove(null);
       setMessage(null);
       return;
     }
-    // Move mode: pieces only go where the rules allow.
-    if (sq === wk) return setSelectedPiece("K");
-    if (sq === wq) return setSelectedPiece("Q");
-    if (selectedPiece) {
-      const mv = rows.find((r) => r.piece === selectedPiece && r.dest === sq);
-      if (mv) playMove(mv.piece, mv.dest);
-      else setSelectedPiece(null);
-    }
+    if (posError) return;
+    if (sq === wk) return setSelected(selected === "K" ? null : "K");
+    if (sq === wq) return setSelected(selected === "Q" ? null : "Q");
+    const candidates = rows.filter((r) => r.dest === sq && (!selected || r.piece === selected));
+    if (candidates.length) playMove(candidates[0].piece, candidates[0].dest); // best move landing there
+    else setSelected(null);
   }
 
-  // Tags: only the selected piece's moves, or (nothing selected) the best value per square.
-  const shown = selectedPiece ? rows.filter((r) => r.piece === selectedPiece) : rows;
+  // One tag per destination square: the best move landing there (of the selected piece, if any).
   const labels = {};
-  for (const r of shown) {
-    if (!labels[r.dest] || labels[r.dest].q < r.q) {
-      labels[r.dest] = { q: r.q, text: r.q.toFixed(2), color: qColor(r.q) };
-    }
+  for (const r of rows) {
+    if (selected && r.piece !== selected) continue;
+    if (labels[r.dest]) continue; // rows are sorted best first
+    const g = r.grade;
+    labels[r.dest] = {
+      text: g === "unknown" ? "?" : valueTag(r.q),
+      color: GRADE[g].color,
+      glyph: glyph(r.piece),
+      title: `${moveLabel(r.piece, r.dest_name)}: ${g === "unknown" ? "never tried by the agent" : `${valueMeaning(r.q)} (q = ${r.q.toFixed(3)})`}`,
+    };
   }
-  const nUnseen = rows.filter((r) => r.visits === 0).length;
+
+  const summary = summarise(rows, source);
+  const sourceProblem =
+    needDp && !dpReady ? "The exact DP values are not loaded on this server yet." :
+    needMc && !mcAvailable ? "No trained Monte Carlo agent yet — start a run in Live Training, then come back." : null;
 
   return (
-    <div className="panel-grid">
-      <div className="card" style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 12 }}>
-        {wk !== null && wq !== null && bk !== null && (
+    <div className="page-grid">
+      <Card className="board-card" tour="explore-board">
+        {wk !== null && wq !== null && bk !== null ? (
           <ChessBoard
             wk={wk} wq={wq} bk={bk}
             squareLabels={labels}
+            selected={selected === "K" ? wk : selected === "Q" ? wq : null}
             onSquareClick={handleSquareClick}
             lastMove={lastMove}
+            blackMove={blackMove}
           />
-        )}
+        ) : <div className="empty">Type three valid squares on the right.</div>}
 
-        <div style={{ display: "flex", gap: 8, width: "100%" }}>
-          <button className={!setupMode ? "primary" : "secondary"} style={{ flex: 1 }} onClick={() => { setSetupMode(false); setSelectedPiece(null); }}>
-            Move pieces (legal moves only)
-          </button>
-          <button className={setupMode ? "primary" : "secondary"} style={{ flex: 1 }} onClick={() => { setSetupMode(true); setSelectedPiece(null); }}>
-            Set up a position
-          </button>
+        <div className="board-status">
+          <Badge tone={posError ? "fail" : "success"}>{posError ? `Illegal: ${posError}` : "Legal position · White to move"}</Badge>
+          {busy && <span className="muted">loading…</span>}
         </div>
+        {message && <div className="message">{message}</div>}
+        <ErrorText>{error}</ErrorText>
 
-        {setupMode ? (
-          <div className="field-row" style={{ width: "100%" }}>
-            <span>Click an empty square to put:</span>
-            <span style={{ display: "flex", gap: 10 }}>
-              <label><input type="radio" checked={placing === "wk"} onChange={() => setPlacing("wk")} /> ♔ White king</label>
-              <label><input type="radio" checked={placing === "wq"} onChange={() => setPlacing("wq")} /> ♕ Queen</label>
-              <label><input type="radio" checked={placing === "bk"} onChange={() => setPlacing("bk")} /> ♚ Black king</label>
-            </span>
-          </div>
-        ) : (
-          <div style={{ fontSize: 13, color: "var(--muted)", width: "100%" }}>
-            {selectedPiece
-              ? `Showing the ${selectedPiece === "K" ? "king" : "queen"}'s legal moves only. Click a tag to play it (Black then replies at random), or click elsewhere to deselect.`
-              : "Each tag = a square White can legally reach, labelled with the value of the best move landing there. Click the ♔ or ♕ to see only that piece's moves."}
-          </div>
-        )}
-
-        <div className={`badge ${posError ? "fail" : "success"}`} style={{ alignSelf: "flex-start" }}>
-          {posError ? `Illegal position: ${posError}` : "Legal position · White to move"}
+        <div className="legend" data-tour="explore-legend">
+          {(source === "mc" ? ["best", "close", "slower", "unknown"] : ["best", "close", "slower", "blunder"]).map((g) => (
+            <span key={g}><i className="swatch" style={{ background: GRADE[g].color }} /> {GRADE[g].label}</span>
+          ))}
         </div>
-        {message && <div style={{ fontSize: 13, color: "var(--navy)", width: "100%" }}>{message}</div>}
+        <Callout tone="info" tour="explore-howto">
+          <strong>How to read the board.</strong> Each tag sits on a square White can reach and says how good that move is:
+          <strong> M1</strong> = mates now, <strong>M2</strong> = forced mate in 2, <strong>≈M3</strong> = about 3 moves on average,
+          <strong> ✗</strong> = blunder. The small ♔/♕ tells which piece moves there. The agent always plays the green tag.
+          Click a tag to play it — Black replies at random and the tags update.
+        </Callout>
+      </Card>
 
-        <div className="key-rule" style={{ width: "100%" }}>
-          <strong>How to read it.</strong> The number on a square is <em>q(s, a)</em>: the expected discounted
-          return if White plays that move now and keeps playing well afterwards. 1.00 = mates immediately;
-          0.98 = mate next move; ~0.9 = a quick forced mate; ≤ 0 = a blunder (queen can be taken, stalemate or
-          timeout). The agent's policy is just "play the highest number" (★ in the list).
-        </div>
-      </div>
-
-      <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-        <div className="card2">
-          <div className="card-title">Position</div>
-          <div className="field-row"><span>White king</span><input type="text" value={wkName} onChange={(e) => setWkName(e.target.value.trim())} style={{ width: 60 }} /></div>
-          <div className="field-row"><span>White queen</span><input type="text" value={wqName} onChange={(e) => setWqName(e.target.value.trim())} style={{ width: 60 }} /></div>
-          <div className="field-row"><span>Black king</span><input type="text" value={bkName} onChange={(e) => setBkName(e.target.value.trim())} style={{ width: 60 }} /></div>
-          <div className="field-row">
-            <span>Moves left (h){source === "mc" && " — ignored by MC"}</span>
-            <input type="number" min={1} max={40} value={movesLeft} onChange={(e) => setMovesLeft(Math.max(1, Math.min(40, +e.target.value)))} style={{ width: 60 }} disabled={source === "mc"} />
-          </div>
-        </div>
-
-        <div className="card2">
-          <div className="card-title">Source of the values</div>
-          <div className="field-row">
-            <label><input type="radio" checked={source === "dp"} onChange={() => setSource("dp")} /> Exact q* (DP)</label>
-            <label><input type="radio" checked={source === "mc"} onChange={() => setSource("mc")} /> Learned Q (Monte Carlo)</label>
-          </div>
-          {source === "dp" && dpStatus && !dpReady && (
-            <>
-              <div style={{ fontSize: 12, color: "var(--rust)", marginBottom: 8 }}>
-                DP status: {dpStatus.status}{dpStatus.progress?.stage ? ` (${dpStatus.progress.stage})` : ""}
-                {dpStatus.status === "error" && " — this server cannot build the DP (e.g. a read-only serverless host). Run the backend locally with python run.py."}
-              </div>
-              <button className="secondary" style={{ width: "100%" }} onClick={solveDp} disabled={busy}>Solve DP (one-time, ~3 min cold)</button>
-            </>
+      <div className="side">
+        <Card title="1 · Position" tone="soft" tour="explore-position">
+          <Field label="Example" tour="explore-examples">
+            <Select value="" onChange={loadExample} options={EXAMPLES} />
+          </Field>
+          <Field label="Board clicks" tour="explore-mode"
+            info="Play moves: click the king/queen, then a tag — only legal moves. Set up: clicking a square puts the chosen piece there.">
+            <Segmented value={mode} onChange={(v) => { setMode(v); setSelected(null); }}
+              options={[{ value: "move", label: "Play moves" }, { value: "setup", label: "Set up" }]} />
+          </Field>
+          {mode === "setup" && (
+            <Field label="Piece to place">
+              <Segmented value={placing} onChange={setPlacing}
+                options={[{ value: "wk", label: "♔ King" }, { value: "wq", label: "♕ Queen" }, { value: "bk", label: "♚ Black" }]} />
+            </Field>
           )}
-          {source === "mc" && <JobPicker value={jobId} onChange={setJobId} />}
-          {error && <div style={{ color: "var(--rust)", fontSize: 12.5, marginTop: 8 }}>{error}</div>}
-        </div>
+          <div className="square-inputs" data-tour="explore-squares">
+            <label>♔ <TextInput value={wkName} onChange={(e) => setWkName(e.target.value)} invalid={wk === null} maxLength={2} /></label>
+            <label>♕ <TextInput value={wqName} onChange={(e) => setWqName(e.target.value)} invalid={wq === null} maxLength={2} /></label>
+            <label>♚ <TextInput value={bkName} onChange={(e) => setBkName(e.target.value)} invalid={bk === null} maxLength={2} /></label>
+          </div>
+          <Field label="Moves left (h)" tour="explore-h"
+            info="The exact values depend on how many moves remain: with few moves left, slow plans become failures. The Monte Carlo agent ignores h.">
+            <NumberInput value={h} min={1} max={40} onChange={(v) => setH(v === "" ? "" : Math.max(1, Math.min(40, v)))} disabled={source === "mc"} />
+          </Field>
+          <Button variant="secondary" block onClick={undo} disabled={!history.length} tour="explore-undo">↶ Undo last move</Button>
+        </Card>
+
+        <Card title="2 · Values from" tone="soft" tour="explore-source">
+          <Segmented value={source} onChange={setSource}
+            options={[{ value: "dp", label: "Exact (DP)" }, { value: "mc", label: "Learned (MC)" }, { value: "compare", label: "Compare" }]} />
+          <div className="field-hint">
+            {source === "dp" && "The true value of every move, computed from the rules (the answer key)."}
+            {source === "mc" && "What a Monte Carlo agent learned by playing — estimates, possibly wrong."}
+            {source === "compare" && "True value vs learned value side by side: where does the agent go wrong?"}
+          </div>
+          {needMc && <JobPicker />}
+          {sourceProblem && <Callout tone="warn">{sourceProblem}</Callout>}
+        </Card>
 
         {rows.length > 0 && (
-          <div className="card2">
-            <div className="card-title">
-              Legal moves, best first {value !== null && `· ${source === "dp" ? "v*(s)" : "max Q"} = ${value.toFixed(3)}`}
-            </div>
-            <div style={{ maxHeight: 300, overflowY: "auto" }}>
-              {rows.map((r, i) => (
-                <div className="stat-row" key={i} style={{ cursor: setupMode ? "default" : "pointer" }}
-                  onClick={() => !setupMode && !busy && playMove(r.piece, r.dest)}
-                  title={setupMode ? "" : "Click to play this move"}>
-                  <span className="label">
-                    {r.piece === "K" ? "♔" : "♕"} → {r.dest_name}
-                    {r.optimal ? "  ★" : ""}
-                    {KIND_LABEL[r.kind] && (
-                      <span className={`badge ${r.kind === "checkmate" ? "success" : "fail"}`} style={{ marginLeft: 6 }}>{KIND_LABEL[r.kind]}</span>
-                    )}
-                    {r.visits !== undefined && (
-                      <span style={{ marginLeft: 6, fontSize: 11 }}>{r.visits === 0 ? "never tried" : `${r.visits} visits`}</span>
-                    )}
+          <Card title="3 · Moves, best first" tone="soft" tour="explore-list">
+            {summary && <div className="summary">{summary}</div>}
+            {mcChoiceRow && (
+              <Callout tone={mcChoiceRow.grade === "best" ? "success" : "warn"}>
+                The trained agent would play <strong>{moveLabel(mcChoice.piece, mcChoice.dest_name)}</strong>:
+                {mcChoiceRow.grade === "best" ? " an optimal move ✓" : ` ${valueMeaning(mcChoiceRow.q)}, while the best is ${valueTag(rows[0].q)}.`}
+              </Callout>
+            )}
+            {canonical && source !== "dp" && (
+              <div className="field-hint">Learned values are shared by the 8 rotations/reflections of this board (stored as K{canonical.wk} Q{canonical.wq} vs K{canonical.bk}).</div>
+            )}
+            <div className="move-list">
+              <div className="move-row move-head">
+                <span>Move</span><span>{source === "compare" ? "Exact" : "Rating"}</span><span>{source === "compare" ? "Learned" : "Value"}</span>
+              </div>
+              {rows.map((r) => (
+                <button type="button" key={`${r.piece}${r.dest}`} className="move-row"
+                  onClick={() => mode === "move" && playMove(r.piece, r.dest)} disabled={mode !== "move" || busy}
+                  title={mode === "move" ? "Play this move" : ""}>
+                  <span>
+                    <i className="swatch" style={{ background: GRADE[r.grade].color }} />
+                    {glyph(r.piece)} {moveLabel(r.piece, r.dest_name)}
+                    {r.grade === "best" && " ★"}
+                    {r.kind === "checkmate" && <Badge tone="success">mate</Badge>}
+                    {r.kind === "stalemate" && <Badge tone="fail">stalemate</Badge>}
                   </span>
-                  <span className="value" style={{ color: qColor(r.q) }}>{r.q.toFixed(3)}</span>
-                </div>
+                  <span>{r.grade === "unknown" ? "never tried" : valueTag(r.q)}</span>
+                  <span className="num">
+                    {source === "compare"
+                      ? (r.mc ? (r.mc.visits === 0 ? "?" : r.mc.q.toFixed(3)) : "—")
+                      : r.grade === "unknown" ? "—" : r.q.toFixed(3)}
+                    {source === "mc" && r.visits > 0 && <small> · {r.visits}×</small>}
+                  </span>
+                </button>
               ))}
             </div>
-            <div className="key-rule" style={{ marginTop: 10 }}>
-              {source === "dp" ? (
-                <>★ marks every optimal move (ties are common). Exact values, from one Bellman backup on V*<sub>h−1</sub>.
-                  Click a row to play that move.</>
-              ) : (
-                <>Learned estimates, not exact values. Stored once per symmetry class
-                  {canonical && <> (this board ≡ representative K{canonical.wk} Q{canonical.wq} vs K{canonical.bk})</>},
-                  and independent of the moves left. {nUnseen > 0 && <>{nUnseen} move(s) were never tried and still
-                  show the starting value Q0 — that is why an under-trained agent likes untried moves.</>}</>
-              )}
-            </div>
-          </div>
+          </Card>
         )}
       </div>
     </div>

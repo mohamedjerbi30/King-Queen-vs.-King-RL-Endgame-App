@@ -3,8 +3,8 @@
 This file answers five questions:
 
 1. What is the agent in **Play**, and where does it come from?
-2. What does **Explore Q-table** show?
-3. What does the **Results Dashboard** show?
+2. What does **Explore values** (the Q-table) show?
+3. What does the **Results** page show?
 4. What is the difference between **Optimal (DP)** and **Trained (Monte Carlo)**?
 5. What does **Live Training** do?
 
@@ -127,39 +127,34 @@ Why do MC at all, if DP is exact? Most real problems are too big to enumerate, o
 
 ---
 
-## 3. Explore Q-table — what you are looking at
+## 3. Explore values (the Q-table) — what you are looking at
 
-You pick a position: type the squares, or click a square to place a piece. Each legal White destination then gets a **coloured tag with a number**. That number is **q(s, a)**: the expected discounted return if White plays that move now and then keeps playing well.
+Pick a position: load an **Example**, type the three squares, or switch "Board clicks" to **Set up** and click squares. Every square White can legally reach gets a **coloured tag**. The tag tells you how good that move is, translated into **"mate in N"**:
 
-How to read the numbers:
+| Tag | Meaning | Underlying value q(s, a) |
+|---|---|---|
+| **M1** | the move checkmates immediately | 1.00 |
+| **M2** | forced mate on the next move | 0.98 (= −0.01 + 0.99 × 1) |
+| **≈M3, ≈M4…** | about 3, 4… moves to mate on average (Black's replies are random) | 0.96, 0.94… |
+| **✗** | blunder: stalemate, queen lost or timeout likely | ≤ 0 |
+| **?** | (Monte Carlo only) the agent never tried this move | — |
 
-| Value | Meaning |
-|---|---|
-| **1.00** | the move checkmates immediately |
-| **0.98** | forced mate on the next move (−0.01 + 0.99 × 1) |
-| **0.90 – 0.97** | a quick forced mate (a few moves) |
-| **around 0 or negative** | a blunder: the queen can be captured, or the move leads to stalemate or a timeout |
+The conversion is exact: a mate on White's n-th move is worth q = 2·0.99ⁿ⁻¹ − 1. Hover a tag to see the raw value.
 
-Tag colours: green ≥ 0.8, gold between 0 and 0.8, red < 0.
+**Colours compare each move with the best move of the same position:** dark green = best, light green = about one move slower, orange = clearly slower, red = blunder, grey = never tried. **The agent's policy is simply "play a dark-green tag".** The small ♔/♕ in the corner of a tag shows which piece moves there.
 
-**With source = Exact q\* (DP):**
+**Playing through:** in "Play moves" mode, click your king or queen to see only its moves, then click a tag (or a row in the list) to play it. Black replies at random and every tag is recomputed for the new position. **Undo** takes the move back.
 
-- These are the **true** values.
-- **★ marks every optimal move.** Several moves often share the best value. Example: from Kc6, Qe4 vs Ka8, **6 different moves** all have q\* = 0.98.
-- Moves that checkmate or stalemate immediately are flagged.
-- "Moves left" (h) matters: the same board can have different values with 40 or 3 moves left.
+**Values from:**
+- **Exact (DP):** the true values (the answer key). ★ marks every optimal move — ties are common: from Kc6, Qe4 vs Ka8, **6 moves** all force mate in 2. "Moves left" (h) matters here.
+- **Learned (MC):** the trained agent's estimates, with how many times each move was tried. The MC table ignores h.
+- **Compare:** true and learned values side by side, plus a sentence saying whether the agent's chosen move is optimal.
 
-**With source = Learned Q (Monte Carlo):**
-
-- These are the trained agent's **estimates**, which can be wrong.
-- Each move shows **how many times it was tried**. "Never tried" means its value is still the starting value Q0, not something learned.
-- "Moves left" is greyed out, because the MC table does not use h.
-
-**Exercise for the presentation:** compare the same position under DP and under MC. You will see how close (or far) the learned values are to the truth.
+Good examples to load: "Trap" (Ke1, Qd1 vs Ke8 — Qd7 and Qd8 hang the queen, shown ✗) and "Mate in 1 next to a stalemate trap" (Kf6, Qa7 vs Kh8 — Qg7 mates, Qf7 stalemates).
 
 ---
 
-## 4. Results Dashboard — what you are looking at
+## 4. Results — what you are looking at
 
 1. **Bar charts:** mate rate and mean return for four policies:
    - **Uniform random:** any legal move. 1.2 % mates.
