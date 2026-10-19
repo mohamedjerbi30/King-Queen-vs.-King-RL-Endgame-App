@@ -86,7 +86,7 @@ export default function ExploreMode() {
         setDpRows(res.qvalues);
       } else setDpRows([]);
       if (needMc && mcAvailable) {
-        const res = await agentQValues(jobId, wk, wq, bk);
+        const res = await agentQValues(jobId, wk, wq, bk, h || 40);
         setMcRows(res.qvalues);
         setCanonical(res.canonical);
       } else setMcRows([]);
@@ -217,7 +217,7 @@ export default function ExploreMode() {
   const summary = summarise(rows, source);
   const sourceProblem =
     needDp && !dpReady ? "The exact DP values are not loaded on this server yet." :
-    needMc && !mcAvailable ? "No trained Monte Carlo agent yet — train one in Live Training (it runs in your browser), then come back." : null;
+    needMc && !mcAvailable && agentOptions.length ? "This agent is still training — its values appear at its first checkpoint (10% of the run)." : null;
 
   return (
     <div className="page-grid">
@@ -287,8 +287,8 @@ export default function ExploreMode() {
             <label>♚ <TextInput value={bkName} onChange={(e) => setBkName(e.target.value)} invalid={bk === null} maxLength={2} /></label>
           </div>
           <Field label="Moves left (h)" tour="explore-h"
-            info="The exact values depend on how many moves remain: with few moves left, slow plans become failures. The Monte Carlo agent ignores h.">
-            <NumberInput value={h} min={1} max={40} onChange={(v) => setH(v === "" ? "" : Math.max(1, Math.min(40, v)))} disabled={source === "mc"} />
+            info="Values depend on how many moves remain: with few moves left, slow plans become failures. Both the exact values and the learned agents use h.">
+            <NumberInput value={h} min={1} max={40} onChange={(v) => setH(v === "" ? "" : Math.max(1, Math.min(40, v)))} />
           </Field>
           <Button variant="secondary" block onClick={undo} disabled={!history.length} tour="explore-undo">↶ Undo last move</Button>
         </Card>

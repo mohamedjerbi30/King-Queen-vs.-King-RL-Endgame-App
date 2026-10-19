@@ -17,7 +17,7 @@ from pathlib import Path
 
 from .state_space import StateSpace
 from .dp_solver import Transitions, DPSolution, backward_induction, DEFAULT_BUDGET
-from .mc_agent import MCAgent
+from .tabular import TabularAgent, epsilon_at
 from . import policy_eval
 
 DATA_DIR = Path(__file__).parent / "data"
@@ -173,19 +173,24 @@ class BaselineCheck:
 
 
 class TrainingJob:
-    def __init__(self, job_id, episodes, alpha, epsilon, q0, budget, seed=None, window=500):
+    """One server-side training run of a report learner (see tabular.py),
+    budgeted in White decisions like the report, with exact tests on all
+    144,508 starting boards (h = 40) during and after training."""
+
+    def __init__(self, job_id, method, decisions, alpha, q0, seed=None, window=500):
+        if dp_state.trans is None:
+            raise RuntimeError("server training needs the DP transition table (solve the DP first)")
         self.job_id = job_id
-        self.episodes_target = episodes
-        self.agent = MCAgent(alpha=alpha, epsilon=epsilon, q0=q0, seed=seed)
-        self.budget = budget
+        self.method = method
+        self.decisions_target = decisions
+        self.agent = TabularAgent(method, dp_state.trans, dp_state.space, alpha=alpha, q0=q0, seed=seed)
         self.window = window
         self.lock = threading.Lock()
-        self.episodes_done = 0
         self.status = "running"  # running | done | stopped | error
         self.error = None
         self.recent_returns = []
         self.recent_mates = []
-        self.curve = []  # list of {episode, mean_return, mate_rate, qtable_size}
+        self.curve = []        # {episode (= decisions so far), mean_return, mate_rate}
         self.evaluations = []  # exact greedy-policy evaluations, see start_evaluation
         self.eval_status = "idle"
         self._stop_flag = False
@@ -196,29 +201,27 @@ class TrainingJob:
 
     def _run(self):
         try:
-            checkpoint_every = max(25, self.episodes_target // 400)  # ~400 curve points
-            for i in range(1, self.episodes_target + 1):
+            point_every = max(2000, self.decisions_target // 400)  # ~400 curve points
+            next_point = point_every
+            while self.agent.decisions < self.decisions_target:
                 if self._stop_flag:
                     with self.lock:
                         self.status = "stopped"
                     break
-                st = self.agent.run_episode(budget=self.budget)
+                outcome, ret = self.agent.train_episode()
                 with self.lock:
-                    self.episodes_done = i
-                    self.recent_returns.append(st.ret)
-                    self.recent_mates.append(1 if st.outcome == "checkmate" else 0)
+                    self.recent_returns.append(ret)
+                    self.recent_mates.append(1 if outcome == "checkmate" else 0)
                     if len(self.recent_returns) > self.window:
                         self.recent_returns.pop(0)
                         self.recent_mates.pop(0)
-                    if i % checkpoint_every == 0 or i == self.episodes_target:
-                        mr = sum(self.recent_returns) / len(self.recent_returns)
-                        mrate = sum(self.recent_mates) / len(self.recent_mates)
+                    if self.agent.decisions >= next_point:
                         self.curve.append({
-                            "episode": i,
-                            "mean_return": mr,
-                            "mate_rate": mrate,
-                            "qtable_size": self.agent.q_table_size(),
+                            "episode": self.agent.decisions,
+                            "mean_return": sum(self.recent_returns) / len(self.recent_returns),
+                            "mate_rate": sum(self.recent_mates) / len(self.recent_mates),
                         })
+                        next_point += point_every
             # Start the exact test BEFORE flagging the run as finished, so a
             # listener never sees "finished and nothing pending" in between.
             self.start_evaluation()  # no-op if the DP solution isn't loaded
@@ -235,8 +238,8 @@ class TrainingJob:
         self._stop_flag = True
 
     def start_evaluation(self):
-        """Exactly evaluate the CURRENT greedy policy (no exploration) on all
-        144,508 boards against pi*. Runs in the background (~20-30 s)."""
+        """Exactly evaluate the CURRENT greedy policy (no exploration, one
+        policy per remaining budget h) on all 144,508 boards. Background, ~20-40 s."""
         with self.lock:
             if self.eval_status == "running" or dp_state.solution is None:
                 return False
@@ -247,14 +250,14 @@ class TrainingJob:
     def _run_evaluation(self):
         try:
             sol = dp_state.solution
-            episodes = self.episodes_done
-            w, coverage = policy_eval.mc_greedy_policy(sol.trans, sol.space, self.agent)
-            s = policy_eval.summarise(*policy_eval.evaluate(sol.trans, w, self.budget))
-            v_star = float(sol.V[min(self.budget, sol.budget)].mean())
+            decisions = self.agent.decisions
+            s = policy_eval.summarise(*policy_eval.evaluate(
+                sol.trans, None, sol.budget, weights_for_h=self.agent.greedy_weights))
+            v_star = float(sol.V[sol.budget].mean())
             s.update(
-                episodes=episodes,
-                coverage=coverage,
-                agreement=policy_eval.agreement_with_optimal(sol, w, min(self.budget, sol.budget)),
+                episodes=decisions,
+                coverage=self.agent.coverage(),
+                agreement=policy_eval.agreement_with_optimal(sol, self.agent.greedy_weights(sol.budget), sol.budget),
                 v_star=v_star,
                 pct_of_optimal=100.0 * s["mean_return"] / v_star,
             )
@@ -271,15 +274,17 @@ class TrainingJob:
             return {
                 "job_id": self.job_id,
                 "status": self.status,
-                "episodes_done": self.episodes_done,
-                "episodes_target": self.episodes_target,
+                "method": self.method,
+                "decisions_done": self.agent.decisions,
+                "decisions_target": self.decisions_target,
+                "episodes_done": self.agent.episodes,
+                "epsilon": epsilon_at(self.agent.decisions),
                 "started_at": self.started_at,
-                "qtable_size": self.agent.q_table_size(),
                 "curve": list(self.curve),
                 "evaluations": list(self.evaluations),
                 "eval_status": self.eval_status,
-                "params": {"alpha": self.agent.alpha, "epsilon": self.agent.epsilon,
-                           "q0": self.agent.q0, "budget": self.budget},
+                "params": {"method": self.method, "alpha": self.agent.alpha, "q0": self.agent.q0,
+                           "decisions": self.decisions_target},
                 "error": self.error,
             }
 
@@ -289,9 +294,9 @@ class JobRegistry:
         self.lock = threading.Lock()
         self.jobs: dict[str, TrainingJob] = {}
 
-    def start(self, episodes, alpha, epsilon, q0, budget, seed=None):
+    def start(self, method, decisions, alpha, q0, seed=None):
         job_id = uuid.uuid4().hex[:12]
-        job = TrainingJob(job_id, episodes, alpha, epsilon, q0, budget, seed=seed)
+        job = TrainingJob(job_id, method, decisions, alpha, q0, seed=seed)
         with self.lock:
             self.jobs[job_id] = job
         return job_id
@@ -303,8 +308,9 @@ class JobRegistry:
     def list(self):
         with self.lock:
             jobs = list(self.jobs.values())
-        return [{"job_id": j.job_id, "status": j.status, "episodes_done": j.episodes_done,
-                 "episodes_target": j.episodes_target, "started_at": j.started_at} for j in jobs]
+        return [{"job_id": j.job_id, "status": j.status, "method": j.method,
+                 "decisions_done": j.agent.decisions, "decisions_target": j.decisions_target,
+                 "started_at": j.started_at} for j in jobs]
 
 
 dp_state = DPState()

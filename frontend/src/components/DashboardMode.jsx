@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import {
   ResponsiveContainer, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Cell,
-  LineChart, Line, Legend, ReferenceLine,
 } from "recharts";
 import { api } from "../api.js";
 import { Badge, Button, Callout, Card, ErrorText, StatRow } from "../ui/index.jsx";
@@ -9,13 +8,7 @@ import SessionResults from "./SessionResults.jsx";
 import { useServerInfo } from "../lib/server.js";
 
 const COLORS = { navy: "#162A4B", gold: "#CC8A2C", rust: "#B1503E", sage: "#3C6B5C" };
-const BAR_COLORS = [COLORS.rust, COLORS.gold, COLORS.sage, COLORS.navy];
-
-const CURVE_SERIES = [
-  { key: "report_settings", name: "α=0.01, Q0=+1 (report)", color: COLORS.navy },
-  { key: "alpha_0_1_optimistic", name: "α=0.1, Q0=+1", color: COLORS.gold },
-  { key: "fast_demo", name: "α=0.1, Q0=0", color: COLORS.sage },
-];
+const BAR_COLORS = [COLORS.rust, COLORS.gold, "#8AA39A", COLORS.sage, COLORS.navy];
 
 function Check({ report, live, digits = 3, pct = false }) {
   if (live === undefined || live === null) return <Badge tone="neutral">not checked</Badge>;
@@ -77,22 +70,17 @@ export default function DashboardMode({ active, onNavigate }) {
   if (error) return <Card><ErrorText>{error}</ErrorText></Card>;
   if (!results) return <Card><div className="empty">Loading…</div></Card>;
 
-  const { mdp, dp_exact, baselines: base, monte_carlo_final: mc, app_learning_curve: curves } = results;
+  const { mdp, dp_exact, baselines: base, final_comparison: cmp } = results;
   const live = baselines?.status === "ready" ? baselines.result : null;
+  const mcConst = cmp.methods.find((m) => m.name === "MC (constant)");
+  const qLearning = cmp.methods.find((m) => m.name === cmp.selected);
 
-  const names = ["Random", "Safe random", "MC (100M)", "Optimal"];
-  const mateRateData = [base.uniform_random.mate_rate, base.safe_random.mate_rate, mc.mate_rate, base.optimal.mate_rate]
-    .map((v, i) => ({ name: names[i], value: v * 100 }));
-  const returnData = [base.uniform_random.mean_return, base.safe_random.mean_return, mc.mean_return, base.optimal.mean_return]
-    .map((v, i) => ({ name: names[i], value: v }));
-
-  const byEp = {};
-  for (const s of CURVE_SERIES) {
-    for (const p of curves[s.key].points) {
-      byEp[p.episodes] = { ...(byEp[p.episodes] || { episodes: p.episodes }), [s.key]: p.mean_return };
-    }
-  }
-  const curveData = Object.values(byEp).sort((a, b) => a.episodes - b.episodes);
+  const bars = [
+    ["Random", base.uniform_random], ["Safe random", base.safe_random],
+    ["MC (const.)", mcConst], ["Q-learning", qLearning], ["Optimal", base.optimal],
+  ];
+  const mateRateData = bars.map(([name, r]) => ({ name, value: r.mate_rate * 100 }));
+  const returnData = bars.map(([name, r]) => ({ name, value: r.mean_return }));
 
   const checkRows = [
     { name: "Random", def: "any legal move, uniformly", r: base.uniform_random, l: live?.uniform_random },
@@ -110,8 +98,8 @@ export default function DashboardMode({ active, onNavigate }) {
         <div>
           <h2>Reference — the project report</h2>
           <p>
-            These are <strong>not</strong> results from your session: they are the presentation's numbers (exact DP,
-            baselines, and a Monte Carlo agent trained offline for 100 million games × 3 seeds), shown for comparison.
+            These are <strong>not</strong> results from your session: they are the final report's numbers — the exact DP
+            benchmarks and the controlled MC/TD comparison (20 million decisions × 3 seeds per method), shown for comparison.
           </p>
         </div>
         <Badge tone="neutral">reference</Badge>
@@ -164,38 +152,40 @@ export default function DashboardMode({ active, onNavigate }) {
       </Card>
 
       <div className="grid-2">
-        <Card title="How fast Monte Carlo learns (measured in this app)" tour="dash-curves">
-          <ResponsiveContainer width="100%" height={260}>
-            <LineChart data={curveData} margin={{ top: 8, right: 16, left: -10, bottom: 0 }}>
-              <CartesianGrid stroke="rgba(22,42,75,0.08)" />
-              <XAxis dataKey="episodes" scale="log" type="number" domain={[1000, 500000]} ticks={[1000, 10000, 100000, 500000]}
-                tickFormatter={(v) => `${v / 1000}k`} tick={{ fontSize: 11 }} />
-              <YAxis domain={[-1, 1]} tick={{ fontSize: 11 }} />
-              <Tooltip formatter={(v) => v.toFixed(3)} labelFormatter={(v) => `${v.toLocaleString()} episodes`} />
-              <Legend wrapperStyle={{ fontSize: 12 }} />
-              <ReferenceLine y={dp_exact.v_star_mean} stroke={COLORS.gold} strokeDasharray="5 4" />
-              <ReferenceLine y={mc.mean_return} stroke={COLORS.sage} strokeDasharray="2 3" />
-              {CURVE_SERIES.map((s) => (
-                <Line key={s.key} dataKey={s.key} name={s.name} stroke={s.color} strokeWidth={2} connectNulls dot={{ r: 3 }} isAnimationActive={false} />
-              ))}
-            </LineChart>
-          </ResponsiveContainer>
+        <Card title="Final MC / TD comparison (report)" tour="dash-comparison">
+          <div className="table-scroll">
+            <table className="table compact">
+              <thead><tr><th>Method</th><th>Return</th><th>Mate</th><th>Moves</th><th>Certified</th><th>Keys visited</th></tr></thead>
+              <tbody>
+                {cmp.methods.map((m) => (
+                  <tr key={m.name} className={m.name === cmp.selected ? "row-selected" : ""}>
+                    <td><strong>{m.name}</strong>{m.name === cmp.selected && <Badge tone="success">selected</Badge>}</td>
+                    <td>{m.mean_return.toFixed(4)} ± {m.sd.toFixed(4)}</td>
+                    <td>{(100 * m.mate_rate).toFixed(2)}%</td>
+                    <td>{m.moves.toFixed(2)}</td>
+                    <td>{(100 * m.certified).toFixed(2)}%</td>
+                    <td>{(100 * m.coverage).toFixed(1)}%</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
           <div className="field-hint">
-            Each point is an exact test of the learned policy. Dashed gold: best possible (0.927). Dotted green: the report's
-            result after 100M episodes (0.902). With the report's settings the agent stays near random for the first ~10,000 games.
+            20 million White decisions per run, seeds 11/23/37, exact evaluation on all 144,508 starts. "Certified" = share of
+            starts where the policy forces mate against every Black reply. Live Training can rerun these methods at any budget.
           </div>
         </Card>
 
-        <Card title="Optimal (DP) vs Trained (MC)" tone="soft" tour="dash-compare">
+        <Card title="Optimal (DP) vs learned (MC / TD)" tone="soft" tour="dash-compare">
           <table className="table compact">
-            <thead><tr><th /><th>Optimal (DP)</th><th>Trained (MC)</th></tr></thead>
+            <thead><tr><th /><th>Optimal (DP)</th><th>Learned (MC / TD)</th></tr></thead>
             <tbody>
               {[
                 ["Knows the rules / model?", "Yes — enumerates every reply", "No — only plays games"],
-                ["Position includes moves left?", "Yes (144,508 × 40)", "No (18,081 symmetry classes)"],
-                ["How values are found", "40 exact Bellman sweeps", "Averaging returns, α = 0.01"],
-                ["Compute", "~3 min, once", "100M games × 3 seeds"],
-                ["Result", `${dp_exact.v_star_mean}, 100% mate, ${dp_exact.mean_moves_to_mate} moves`, `${mc.mean_return} ± ${mc.mean_return_std}, >99.99%, ${mc.mean_moves_to_mate} moves`],
+                ["State", "(wK, wQ, bK, h) — 144,508 × 40", "same, symmetry-shared — 499,496 × 40"],
+                ["How values are found", "40 exact Bellman sweeps", "sampled returns (MC) or bootstrapped targets (TD)"],
+                ["Compute", "~3 min, once", "20M decisions × 3 seeds per method"],
+                ["Result", `${dp_exact.v_star_mean}, 100% mate, ${dp_exact.mean_moves_to_mate} moves`, `Q-learning ${qLearning.mean_return} ± ${qLearning.sd}, ${(100 * qLearning.mate_rate).toFixed(2)}%, ${qLearning.moves} moves`],
                 ["Role", "Answer key", "The learner being graded"],
               ].map(([k, a, b]) => (
                 <tr key={k}><td className="muted">{k}</td><td>{a}</td><td>{b}</td></tr>
@@ -216,18 +206,19 @@ export default function DashboardMode({ active, onNavigate }) {
             <StatRow label="This server's DP" value={<><Badge tone={dpStatus.status === "ready" ? "success" : "neutral"}>{dpStatus.status}</Badge>{dpStatus.status === "ready" && ` v* = ${dpStatus.v_star_mean.toFixed(6)}`}</>} />
           )}
         </Card>
-        <Card title="Monte Carlo — report result (100M episodes × 3 seeds)" tone="soft" tour="dash-mc">
-          <StatRow label="Mean return" value={`${mc.mean_return.toFixed(4)} ± ${mc.mean_return_std}`} />
-          <StatRow label="Moves to mate" value={`${mc.mean_moves_to_mate} ± ${mc.mean_moves_to_mate_std}`} />
-          <StatRow label="Mate rate" value="> 99.99%" />
-          <StatRow label="Share of the best possible" value={`${mc.pct_of_optimal_return}%`} />
-          <StatRow label="α / ε / Q0" value={`${mc.algorithm.alpha} / ${mc.algorithm.epsilon} / ${mc.algorithm.q0}`} />
+        <Card title="Training protocol (report)" tone="soft" tour="dash-protocol">
+          <StatRow label="Budget per run" value={`${(cmp.protocol.decisions_per_run / 1e6).toFixed(0)} M White decisions`} />
+          <StatRow label="Seeds" value={cmp.protocol.seeds.join(", ")} />
+          <StatRow label="Initial value Q0" value={cmp.protocol.q0} />
+          <StatRow label="Step size α" value={cmp.protocol.alpha} />
+          <StatRow label="Exploration ε" value="max(0.02, (1 + D/10⁴)^−½)" info={cmp.protocol.epsilon} />
+          <StatRow label="Training starts" value="uniform board, uniform h" info={cmp.protocol.training_starts} />
         </Card>
       </div>
 
       <Callout tone="info">
-        DP and baseline numbers are recomputed by this server. The 100M-episode Monte Carlo result is the report's offline
-        measurement — too long to rerun live; the curves show what this app reproduces up to 500k episodes.
+        DP and baseline numbers are recomputed by this server. The MC/TD comparison is the report's offline measurement; Live
+        Training runs the same five algorithms, with the same representation and settings, in your browser.
       </Callout>
     </div>
   );

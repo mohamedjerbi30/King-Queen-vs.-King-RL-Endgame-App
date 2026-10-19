@@ -52,7 +52,7 @@ export default function PlayMode({ active }) {
     ? (dpReady ? null : "The exact DP solution is not loaded on this server yet (Explore → Solve DP).")
     : (mcAvailable ? null : agentOptions.some((o) => o.value === jobId)
       ? "This agent is still training — it becomes playable at its first checkpoint (10% of the run)."
-      : "No trained Monte Carlo agent yet — train one in Live Training (it runs in your browser).");
+      : null); // no agent at all: the agent picker shows the note and a "Train an agent" link
 
   // (Re)check once the server answers — a sleeping free server may wake up later.
   useEffect(() => {

@@ -56,8 +56,8 @@ export const api = {
     }),
   trainStatus: (jobId) => req(`/train/status/${jobId}`),
   trainStop: (jobId) => req(`/train/stop/${jobId}`, { method: "POST" }),
-  trainQtable: (jobId, wk, wq, bk) =>
-    req(`/train/qtable/${jobId}?wk=${wk}&wq=${wq}&bk=${bk}`),
+  trainQtable: (jobId, wk, wq, bk, h = 40) =>
+    req(`/train/qtable/${jobId}?wk=${wk}&wq=${wq}&bk=${bk}&moves_left=${h}`),
   trainJobs: () => req("/train/jobs"),
   trainEvaluate: (jobId) => req(`/train/evaluate/${jobId}`, { method: "POST" }),
 

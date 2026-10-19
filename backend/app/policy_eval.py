@@ -17,7 +17,6 @@ from __future__ import annotations
 import numpy as np
 
 from .chess_engine import STEP_REWARD, GAMMA, LOSS_REWARD, DEFAULT_BUDGET
-from .state_space import apply_symmetry
 
 
 def _segment_ids(trans):
@@ -57,26 +56,6 @@ def optimal_policy_weights(solution, h):
     pi = solution.PI[h - 1]
     w[pi[pi >= 0]] = 1.0
     return w
-
-
-def mc_greedy_policy(trans, space, agent):
-    """Greedy policy of a Monte Carlo Q-table (ties split uniformly). Also
-    returns the fraction of (board, move) pairs the table has actually seen."""
-    q = np.empty(trans.n_moves)
-    seen = np.zeros(trans.n_moves, dtype=bool)
-    Q, q0, visits = agent.Q, agent.q0, agent.visit_count
-    starts = trans.move_board_start
-    pieces = trans.move_piece
-    dests = trans.move_dest
-    for bid, (wk, wq, bk) in enumerate(space.boards):
-        cwk, cwq, cbk, k = agent.canon_board(wk, wq, bk)
-        for mi in range(starts[bid], starts[bid + 1]):
-            key = (cwk, cwq, cbk, "K" if pieces[mi] == 0 else "Q", apply_symmetry(int(dests[mi]), k))
-            q[mi] = Q.get(key, q0)
-            seen[mi] = key in visits
-    seg = _segment_ids(trans)
-    best = np.maximum.reduceat(q, starts[:-1])
-    return _normalise(trans, q >= best[seg] - 1e-12), float(seen.mean())
 
 
 def evaluate(trans, weights, budget: int = DEFAULT_BUDGET, weights_for_h=None):

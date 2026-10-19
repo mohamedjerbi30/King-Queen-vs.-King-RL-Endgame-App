@@ -1,82 +1,74 @@
-// Trains a Monte Carlo agent off the main thread and streams progress to the
-// page (~10 messages/s), so the learning curve stays smooth and the UI never
-// freezes. Snapshots of the Q-table are sent at each test checkpoint and at
-// the end, so the page can save them (IndexedDB) and use the agent elsewhere.
-import { randomStart, rng, runEpisode, sampledTest } from "../lib/engine.js";
+// Trains one tabular agent (MC mean / MC constant / SARSA / Expected SARSA /
+// Q-learning) off the main thread, with the report's protocol, and streams
+// progress to the page (~10 messages/s). Sparse Q-table snapshots are sent at
+// 10%, 50% and the end of the run so the page can save the agent (IndexedDB).
+import { epsilonAt, newAgent, randomStart, rng, sampledTest, sparseSnapshot, trainEpisode } from "../lib/engine.js";
 
-const WINDOW = 500;           // training-return moving window, like the server
-const TEST_GAMES = 5000;      // games per sampled test
-const N_TESTS = 10;           // tests spread over the run (+ one at the end)
-const SLICE_MS = 80;          // work between two progress messages
+const WINDOW = 500;          // moving window of training episodes for the live curve
+const TEST_GAMES = 5000;     // games per sampled test (h = 40 starts)
+const N_TESTS = 10;          // tests spread over the run, plus one at the end
+const SLICE_MS = 80;         // work between two progress messages
 
 let stopRequested = false;
-let agent = null;
 
-function snapshot() {
-  const n = agent.Q.size;
-  const keys = new Int32Array(n), values = new Float64Array(n), visits = new Uint32Array(n);
-  let i = 0;
-  for (const [k, v] of agent.Q) {
-    keys[i] = k;
-    values[i] = v;
-    visits[i] = agent.visits.get(k) || 0;
-    i++;
-  }
-  return { keys, values, visits };
-}
-
-function postSnapshot(done) {
-  const snap = snapshot();
-  self.postMessage({ type: "snapshot", episodes_done: done, ...snap }, [snap.keys.buffer, snap.values.buffer, snap.visits.buffer]);
-}
-
-function test(starts, budget, episodes) {
-  const t = sampledTest(agent, starts, budget);
-  return { ...t, episodes, sampled: true };
+function postSnapshot(agent) {
+  const s = sparseSnapshot(agent);
+  self.postMessage({ type: "snapshot", decisions_done: agent.decisions, episodes_done: agent.episodes, ...s },
+    [s.idx.buffer, s.q.buffer, s.visits.buffer]);
 }
 
 async function train({ params, seed }) {
-  const { episodes, alpha, epsilon, q0, budget } = params;
-  agent = { Q: new Map(), visits: new Map(), alpha, epsilon, q0 };
+  const { method, decisions, alpha, q0 } = params;
+  const agent = newAgent({ method, alpha, q0 });
+  const lookup = (k) => agent.Q[k];
   stopRequested = false;
   const rand = rng(seed);
   const startRand = rng(20240901); // the same test positions at every checkpoint
   const starts = Array.from({ length: TEST_GAMES }, () => randomStart(startRand));
-  const checkpointEvery = Math.max(25, Math.floor(episodes / 400));
-  const testEvery = Math.max(1, Math.floor(episodes / N_TESTS));
+  const pointEvery = Math.max(2000, Math.floor(decisions / 400));
+  const testEvery = Math.max(1, Math.floor(decisions / N_TESTS));
+  const snapshotsAt = [Math.floor(decisions * 0.1), Math.floor(decisions * 0.5)];
   const returns = new Float64Array(WINDOW), mates = new Uint8Array(WINDOW);
-  let filled = 0, sumRet = 0, sumMate = 0;
-  let done = 0, curve = [], evals = [];
+  let filled = 0, sumRet = 0, sumMate = 0, nextPoint = pointEvery, nextTest = testEvery;
+  let curve = [], evals = [];
 
-  while (done < episodes && !stopRequested) {
+  while (agent.decisions < decisions && !stopRequested) {
     const sliceEnd = performance.now() + SLICE_MS;
-    while (done < episodes && performance.now() < sliceEnd) {
-      const st = runEpisode(agent, budget, rand);
-      const slot = done % WINDOW;
+    while (agent.decisions < decisions && performance.now() < sliceEnd) {
+      const st = trainEpisode(agent, rand);
+      const slot = agent.episodes % WINDOW;
       if (filled === WINDOW) { sumRet -= returns[slot]; sumMate -= mates[slot]; } else filled++;
       returns[slot] = st.ret;
       mates[slot] = st.outcome === "checkmate" ? 1 : 0;
       sumRet += returns[slot];
       sumMate += mates[slot];
-      done++;
-      if (done % checkpointEvery === 0 || done === episodes) {
-        curve.push({ episode: done, mean_return: sumRet / filled, mate_rate: sumMate / filled, qtable_size: agent.Q.size });
+      if (agent.decisions >= nextPoint) {
+        curve.push({ episode: agent.decisions, mean_return: sumRet / filled, mate_rate: sumMate / filled, epsilon: epsilonAt(agent.decisions) });
+        nextPoint += pointEvery;
       }
-      if (done % testEvery === 0 && done < episodes) {
-        evals.push(test(starts, budget, done));
-        postSnapshot(done);
+      if (agent.decisions >= nextTest && agent.decisions < decisions) {
+        evals.push({ ...sampledTest(lookup, starts), episodes: agent.decisions, sampled: true });
+        nextTest += testEvery;
+        if (snapshotsAt.length && agent.decisions >= snapshotsAt[0]) {
+          snapshotsAt.shift();
+          postSnapshot(agent);
+        }
         break; // report right away
       }
     }
-    self.postMessage({ type: "progress", episodes_done: done, qtable_size: agent.Q.size, curve, evaluations: evals });
+    self.postMessage({ type: "progress", decisions_done: agent.decisions, episodes_done: agent.episodes,
+      epsilon: epsilonAt(agent.decisions), curve, evaluations: evals });
     curve = [];
     evals = [];
     await new Promise((r) => setTimeout(r, 0)); // let "stop" messages in
   }
 
-  const final = test(starts, budget, done);
-  self.postMessage({ type: "progress", episodes_done: done, qtable_size: agent.Q.size, curve, evaluations: [final] });
-  postSnapshot(done);
+  const final = { ...sampledTest(lookup, starts), episodes: agent.decisions, sampled: true };
+  let visited = 0;
+  for (let i = 0; i < agent.N.length; i++) if (agent.N[i]) visited++;
+  self.postMessage({ type: "progress", decisions_done: agent.decisions, episodes_done: agent.episodes,
+    epsilon: epsilonAt(agent.decisions), curve, evaluations: [{ ...final, coverage: visited / agent.N.length }] });
+  postSnapshot(agent);
   self.postMessage({ type: "done", status: stopRequested ? "stopped" : "done" });
 }
 

@@ -231,3 +231,7 @@ body {
   border-top: 1px solid var(--line); font-size: 12px; color: var(--muted); }
 .backend-status strong { color: var(--navy); }
 .backend-status a { color: var(--navy); text-decoration: underline; text-underline-offset: 2px; }
+
+.row-selected td { background: rgba(60, 107, 92, 0.08); }
+
+.empty-agent { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px; }

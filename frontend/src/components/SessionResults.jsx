@@ -1,5 +1,6 @@
 import { useGameHistory, useRunHistory } from "../lib/history.js";
 import { Badge, Button, Card } from "../ui/index.jsx";
+import { METHODS } from "../lib/engine.js";
 
 const WHO = {
   you: "You",
@@ -103,12 +104,12 @@ export default function SessionResults({ onNavigate }) {
               <div className="muted">None yet — start a run in Live Training.</div>
             ) : (
               <table className="table compact">
-                <thead><tr><th>Agent</th><th>Settings</th><th>Episodes</th><th>Won</th><th>Moves</th><th>Avg return</th></tr></thead>
+                <thead><tr><th>Agent</th><th>Method</th><th>Decisions</th><th>Won</th><th>Moves</th><th>Avg return</th></tr></thead>
                 <tbody>
                   {runs.map((r) => (
                     <tr key={r.job_id}>
                       <td>{r.job_id.startsWith("b") ? `${r.job_id.slice(1, 7)} (browser)` : `${r.job_id.slice(0, 6)} (server)`}</td>
-                      <td>{r.params ? `α=${r.params.alpha}, Q0=${r.params.q0}` : "—"}</td>
+                      <td>{r.params?.method ? METHODS[r.params.method] || r.params.method : "—"}</td>
                       <td>{r.evaluation.episodes.toLocaleString()}</td>
                       <td>{(100 * r.evaluation.mate_rate).toFixed(1)}%</td>
                       <td>{r.evaluation.mean_moves_to_mate?.toFixed(1) ?? "—"}</td>

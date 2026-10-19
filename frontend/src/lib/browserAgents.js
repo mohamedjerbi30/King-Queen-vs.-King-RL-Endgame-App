@@ -1,12 +1,13 @@
-// Monte Carlo agents trained in the visitor's browser (Web Worker), saved in
-// IndexedDB and usable by Play / Explore / Results without any server — so
-// training works on a serverless host such as Vercel.
+// Tabular agents (MC / SARSA / Expected SARSA / Q-learning, report protocol)
+// trained in the visitor's browser (Web Worker), saved in IndexedDB as sparse
+// Q-table snapshots and usable by Play / Explore / Results without any server.
 import { useEffect, useState } from "react";
 import { idb } from "./idb.js";
-import { canonical, canonicalSquares, greedy, qKey, rng, sampledTest, randomStart, whiteMoves } from "./engine.js";
+import { canonicalSquares, greedyIndex, randomStart, rng, sampledTest, sharedIndex, sparseLookup } from "./engine.js";
 import { sqName } from "./chess.js";
 
 const V_STAR = 0.927126;
+const FORMAT = 2; // agents saved before the h-aware representation (format 1) are dropped
 
 const store = {
   agents: [],          // metadata of every saved agent, newest first
@@ -15,7 +16,7 @@ const store = {
   workers: {},         // id -> Worker
   subscribers: new Set(),
 };
-const qCache = new Map(); // id -> { Q, visits, q0, episodes }
+const qCache = new Map(); // id -> { lookup, decisions } for the last loaded snapshot
 
 function emit() {
   const state = { agents: store.agents, loaded: store.loaded, live: { ...store.live } };
@@ -25,7 +26,11 @@ function emit() {
 async function loadList() {
   try {
     const list = await idb.getAll("agents");
-    store.agents = list.sort((a, b) => b.started_at - a.started_at);
+    for (const a of list.filter((x) => x.format !== FORMAT)) { // old board-only Q-tables
+      idb.delete("agents", a.id).catch(() => {});
+      idb.delete("qtables", a.id).catch(() => {});
+    }
+    store.agents = list.filter((x) => x.format === FORMAT).sort((a, b) => b.started_at - a.started_at);
   } catch {
     store.agents = [];
   }
@@ -53,8 +58,9 @@ const withDerived = (e) => ({ ...e, v_star: V_STAR, pct_of_optimal: (100 * e.mea
 export function startBrowserTraining(params) {
   const id = `b${Date.now().toString(36)}${Math.floor(Math.random() * 1e4).toString(36)}`;
   const meta = {
-    id, kind: "browser", params, status: "running", started_at: Date.now() / 1000,
-    episodes_done: 0, episodes_target: params.episodes, qtable_size: 0, curve: [], evaluations: [], has_qtable: false,
+    id, kind: "browser", format: FORMAT, params, status: "running", started_at: Date.now() / 1000,
+    decisions_done: 0, decisions_target: params.decisions, episodes_done: 0, epsilon: 1,
+    curve: [], evaluations: [], has_qtable: false,
   };
   store.live[id] = { ...meta, job_id: id, eval_status: "idle" };
   saveMeta(meta);
@@ -70,17 +76,18 @@ export function startBrowserTraining(params) {
     const live = store.live[id];
     if (!live) return;
     if (msg.type === "progress") {
+      live.decisions_done = msg.decisions_done;
       live.episodes_done = msg.episodes_done;
-      live.qtable_size = msg.qtable_size;
+      live.epsilon = msg.epsilon;
       if (msg.curve.length) live.curve = live.curve.concat(msg.curve);
       if (msg.evaluations.length) live.evaluations = live.evaluations.concat(msg.evaluations.map(withDerived));
       store.live[id] = { ...live };
       emit();
     } else if (msg.type === "snapshot") {
-      await idb.put("qtables", { keys: msg.keys, values: msg.values, visits: msg.visits }, id).catch(() => {});
+      await idb.put("qtables", { idx: msg.idx, q: msg.q, visits: msg.visits }, id).catch(() => {});
       qCache.delete(id);
       const { job_id: _j, eval_status: _e, ...m } = store.live[id];
-      await saveMeta({ ...m, has_qtable: true, snapshot_episodes: msg.episodes_done });
+      await saveMeta({ ...m, has_qtable: true, snapshot_decisions: msg.decisions_done, visited: msg.idx.length });
       store.live[id] = { ...store.live[id], has_qtable: true };
     } else if (msg.type === "done") {
       const { job_id: _j, eval_status: _e, ...m } = store.live[id];
@@ -117,50 +124,47 @@ export async function clearBrowserAgents() {
   await idb.clear("qtables").catch(() => {});
 }
 
-/** Load (and cache) an agent's Q-table as Maps. */
+/** Load (and cache) an agent's sparse Q-table snapshot. */
 export async function loadAgent(id) {
   const meta = store.agents.find((a) => a.id === id);
   const cached = qCache.get(id);
-  if (cached && cached.episodes === meta?.snapshot_episodes) return cached;
+  if (cached && cached.decisions === meta?.snapshot_decisions) return cached;
   const t = await idb.get("qtables", id);
-  if (!t) throw new Error("This agent has no saved Q-table yet — wait for its first checkpoint.");
-  const Q = new Map(), visits = new Map();
-  for (let i = 0; i < t.keys.length; i++) {
-    Q.set(t.keys[i], t.values[i]);
-    visits.set(t.keys[i], t.visits[i]);
-  }
-  const agent = { Q, visits, q0: meta?.params.q0 ?? 1, episodes: meta?.snapshot_episodes };
+  if (!t) throw new Error("This agent has no saved Q-table yet — wait for its first checkpoint (10% of the run).");
+  const agent = { lookup: sparseLookup(t, meta?.params.q0 ?? 0), decisions: meta?.snapshot_decisions };
+  qCache.clear(); // keep only one agent in memory
   qCache.set(id, agent);
   return agent;
 }
 
-/** The agent's greedy move, in the same shape as the server's /agent_move. */
-export async function browserAgentMove(id, wk, wq, bk) {
-  const agent = await loadAgent(id);
-  const { move, value } = greedy(agent.Q, agent.q0, wk, wq, bk, Math.random);
+/** The agent's greedy move at remaining budget h, in the same shape as the server's /agent_move. */
+export async function browserAgentMove(id, wk, wq, bk, h) {
+  const { lookup } = await loadAgent(id);
+  const { move, value } = greedyIndex(lookup.value, wk, wq, bk, Math.max(1, Math.min(40, h)));
   return { piece: move[0] === 0 ? "K" : "Q", dest: move[1], dest_name: sqName(move[1]), value, source: "mc" };
 }
 
-/** Learned value of every legal move, in the same shape as /train/qtable. */
-export async function browserQValues(id, wk, wq, bk) {
-  const agent = await loadAgent(id);
-  const canon = canonical(wk, wq, bk);
-  const rows = whiteMoves(wk, wq, bk).map(([p, d]) => {
-    const key = qKey(canon, p, d);
-    return { piece: p === 0 ? "K" : "Q", dest: d, dest_name: sqName(d), q: agent.Q.get(key) ?? agent.q0, visits: agent.visits.get(key) || 0 };
-  });
+/** Learned value and visit count of every legal move at budget h (same shape as /train/qtable). */
+export async function browserQValues(id, wk, wq, bk, h) {
+  const { lookup } = await loadAgent(id);
+  const layer = (Math.max(1, Math.min(40, h)) - 1) * sharedIndex().NS;
+  const { moves, idx } = greedyIndex(lookup.value, wk, wq, bk, h);
+  const rows = moves.map(([p, d], i) => ({
+    piece: p === 0 ? "K" : "Q", dest: d, dest_name: sqName(d),
+    q: lookup.value(layer + idx[i]), visits: lookup.visits(layer + idx[i]),
+  }));
   rows.sort((a, b) => b.q - a.q);
   const c = canonicalSquares(wk, wq, bk);
   return { qvalues: rows, canonical: { wk: sqName(c.wk), wq: sqName(c.wq), bk: sqName(c.bk), symmetry: c.symmetry } };
 }
 
-/** Sampled test (5,000 games) of a saved agent, run in the page. */
+/** Sampled test (5,000 games from h = 40) of a saved agent, run in the page. */
 export async function testBrowserAgent(id) {
-  const agent = await loadAgent(id);
+  const { lookup } = await loadAgent(id);
   const meta = store.agents.find((a) => a.id === id);
   const r = rng(20240901);
   const starts = Array.from({ length: 5000 }, () => randomStart(r));
-  const res = withDerived({ ...sampledTest(agent, starts, meta.params.budget), episodes: meta.snapshot_episodes ?? meta.episodes_done, sampled: true });
+  const res = withDerived({ ...sampledTest(lookup.value, starts), episodes: meta.snapshot_decisions ?? meta.decisions_done, sampled: true });
   await saveMeta({ ...meta, evaluations: [...meta.evaluations, res] });
   return res;
 }

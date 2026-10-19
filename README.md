@@ -2,7 +2,7 @@
 
 A full-stack reinforcement-learning demo built from the "Basic Chess Endgame"
 presentation: a from-scratch KQvK (King+Queen vs. King) chess engine, an
-exact finite-horizon dynamic-programming solver, a first-visit Monte Carlo
+exact finite-horizon dynamic-programming solver, the five tabular learners of the report (MC mean, MC constant, SARSA, Expected SARSA, Q-learning)
 control agent, a Flask REST API, and a React frontend with four modes.
 
 - **Backend:** Flask (Python), pure-Python chess rules, numpy-vectorized DP.
@@ -19,18 +19,20 @@ control agent, a Flask REST API, and a React frontend with four modes.
   move budget (finite-horizon MDP, since the remaining-move count is part of
   the state). Vectorized with numpy; solves from scratch in well under a
   minute once the transition table is cached.
-- `backend/app/mc_agent.py` — first-visit Monte Carlo control: constant step
-  size α, fixed ε-greedy exploration, optimistic Q0 initialization — matching
-  the presentation's documented algorithm exactly.
+- `backend/app/tabular.py` — the report's learners (MC mean / constant,
+  SARSA, Expected SARSA, Q-learning) on the report's representation: Q indexed
+  by `(h - 1) * 499,496 + shared(board, action)`, uniform-h resets, epsilon
+  schedule `max(0.02, (1 + D/10000)^-1/2)`, Q0 = 0. The same algorithm runs in
+  the browser (`frontend/src/lib/engine.js`).
 - `backend/app/routes.py` — the REST API consumed by the frontend.
 - `backend/app/results_data.py` — the project's official, previously-measured
-  numbers (100,000,000 episodes × 3 seeds) shown on the Results Dashboard.
+  numbers (exact DP benchmarks and the final MC/TD comparison) shown on the Results page.
 - `frontend/src/components/` — `PlayMode`, `ExploreMode`, `TrainMode`,
   `DashboardMode`, plus a shared `ChessBoard` component.
 
 Reward structure, discount, and hyperparameters reproduce the presentation
 exactly: reward = +1 (checkmate) / −1 (any other game end) / −0.01 (per
-step), γ = 0.99, move budget = 40, α = 0.01, ε = 0.05 (fixed), Q0 = +1.
+step), γ = 0.99, move budget = 40; learners: α = 0.10 (1/N for MC mean), Q0 = 0, ε = max(0.02, (1 + D/10000)^-1/2).
 
 ## Running it
 
@@ -73,28 +75,25 @@ that directory with any static file server, pointed at a reachable Flask API
 ## The four modes
 
 1. **Play** — play White yourself (click a piece, then a highlighted
-   destination), or let an agent (exact DP or a trained Monte Carlo job) play
-   White while you watch. Black's king always replies automatically,
-   following the engine's rules.
-2. **Explore values** — type in any legal board (king/queen/king squares,
-   moves remaining), or click squares to place pieces, and see every legal
-   move's value drawn on the board: exact q\*(s, a) from DP (all tied optimal
-   moves starred, mate/stalemate moves flagged), or a training job's learned
-   Q(s, a) with its visit count (untried moves still show Q0).
-3. **Live Training** — start a bounded Monte Carlo training run (100 to
-   500,000 episodes), with a "Report settings" and a "Fast demo"
-   (α = 0.1, Q0 = 0) preset. The chart shows the noisy ε-greedy training
-   return, plus exact evaluations of the greedy policy over all 144,508
-   boards (mean return, % of v\*, mate rate, moves to mate, agreement with
-   π\*), run on demand and automatically when training ends. Jobs then show
-   up in the job picker of Play and Explore.
-4. **Results** — the report's numbers, with the baselines and π\*
-   re-evaluated exactly on the server (uniform random, "safe" random, π\*),
-   the real learning curves measured with this app, and a DP-vs-MC summary.
+   destination), or let an agent play White while you watch: the exact DP
+   policy, or one of your trained agents (MC or TD). Black's king replies with
+   a random legal move. A banner explains how each game ended.
+2. **Explore values** — set up or play through any legal position and see
+   every legal move's value on the board as a "mate in N" tag: exact q\*(s, a)
+   from DP, a trained agent's learned Q(s, h, a) with visit counts, or both
+   side by side ("Compare").
+3. **Live Training** — train any of the report's five learners (MC mean, MC
+   constant, SARSA, Expected SARSA, Q-learning) with the report's protocol and
+   a budget in decisions (2 M quick demo, or the report's 20 M in about a
+   minute). Training runs in the browser by default; on a long-running server
+   it can also run there, with exact tests on all 144,508 boards.
+4. **Results** — your own games and agents, then the report's reference
+   numbers: the baselines and π\* re-evaluated exactly on the server, and the
+   final MC/TD comparison (20 M decisions × 3 seeds).
 
 ## Deployment
 
-The backend must run as one long-lived process (training jobs and WebSocket streams live in its memory), so it cannot run on Vercel's serverless functions. Agents can also be trained **in the browser** (`frontend/src/lib/engine.js`, a tested port of the Python engine and MC agent, run in a Web Worker and saved in IndexedDB), so training works on the hosted Vercel version too. See [DEPLOY.md](DEPLOY.md): Vercel only (browser training), or backend on Render (Dockerfile + `render.yaml`) for the DP features.
+The backend must run as one long-lived process (training jobs and WebSocket streams live in its memory), so it cannot run on Vercel's serverless functions. Agents can also be trained **in the browser** (`frontend/src/lib/engine.js`, a tested port of the Python engine and the report's learners, run in a Web Worker and saved in IndexedDB), so training works on the hosted Vercel version too. See [DEPLOY.md](DEPLOY.md): Vercel only (browser training), or backend on Render (Dockerfile + `render.yaml`) for the DP features.
 
 ## Interface notes
 

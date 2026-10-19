@@ -9,8 +9,8 @@ from .chess_engine import (
     kings_adjacent, black_in_check,
 )
 from .jobs import dp_state, job_registry, baseline_check
-from .mc_agent import ALPHA, EPSILON, Q0
-from .state_space import apply_symmetry
+from .tabular import METHODS
+from .state_space import canonicalize
 from .results_data import OFFICIAL_RESULTS
 
 bp = Blueprint("api", __name__, url_prefix="/api")
@@ -64,7 +64,7 @@ def constants():
     return jsonify({
         "gamma": GAMMA, "step_reward": STEP_REWARD, "win_reward": WIN_REWARD,
         "loss_reward": LOSS_REWARD, "default_budget": DEFAULT_BUDGET,
-        "alpha": ALPHA, "epsilon": EPSILON, "q0": Q0,
+        "alpha": 0.1, "q0": 0.0, "epsilon": "max(0.02, (1 + D/10000)^-1/2)", "methods": list(METHODS),
     })
 
 
@@ -130,10 +130,7 @@ def agent_move():
         job = job_registry.get(job_id)
         if job is None:
             return jsonify({"error": UNKNOWN_JOB, "code": "unknown_job", "instance": INSTANCE_ID}), 404
-        move, val = job.agent.best_move_for(wk, wq, bk)
-        if move is None:
-            return jsonify({"error": "no legal move"}), 404
-        piece, dest = move
+        (piece, dest), val = job.agent.best_move(wk, wq, bk, moves_left)  # h is part of the state
         return jsonify({"piece": piece, "dest": dest, "dest_name": sq_name(dest), "source": "mc", "value": val})
 
     return jsonify({"error": "no agent available for the requested source"}), 400
@@ -208,15 +205,16 @@ def baselines_verify():
 def train_start():
     if not SERVER_TRAINING:
         return jsonify({"error": LOW_MEMORY_MSG}), 503
+    if dp_state.trans is None:
+        return jsonify({"error": "server training needs the DP solution (solve it first)"}), 409
     data = request.get_json(silent=True) or {}
-    episodes = int(data.get("episodes", 20000))
-    episodes = max(100, min(episodes, 500000))  # keep a single run bounded for the live demo
-    alpha = float(data.get("alpha", ALPHA))
-    epsilon = float(data.get("epsilon", EPSILON))
-    q0 = float(data.get("q0", Q0))
-    budget = int(data.get("budget", DEFAULT_BUDGET))
-    seed = data.get("seed")
-    job_id = job_registry.start(episodes, alpha, epsilon, q0, budget, seed=seed)
+    method = data.get("method", "qlearning")
+    if method not in METHODS:
+        return jsonify({"error": f"unknown method {method!r}"}), 400
+    decisions = max(10_000, min(int(data.get("decisions", 1_000_000)), 2_000_000))  # bounded: Python is ~20x slower than the browser
+    alpha = float(data.get("alpha", 0.1))
+    q0 = float(data.get("q0", 0.0))
+    job_id = job_registry.start(method, decisions, alpha, q0, seed=data.get("seed"))
     return jsonify({"job_id": job_id})
 
 
@@ -264,15 +262,11 @@ def train_qtable(job_id):
     err = _position_error(wk, wq, bk)
     if err:
         return jsonify({"error": err}), 400
-    pos = Position(wk, wq, bk, 1)
-    moves = white_legal_moves(pos)
-    cwk, cwq, cbk, k = job.agent.canon_board(wk, wq, bk)
-    rows = []
-    for piece, dest in moves:
-        v = job.agent.q_canon(cwk, cwq, cbk, k, piece, dest)
-        n = job.agent.visit_count.get((cwk, cwq, cbk, piece, apply_symmetry(dest, k)), 0)
-        rows.append({"piece": piece, "dest": dest, "dest_name": sq_name(dest), "q": v, "visits": n})
+    h = int(request.args.get("moves_left", 40))
+    rows = [{"piece": p, "dest": d, "dest_name": sq_name(d), "q": q, "visits": n}
+            for p, d, q, n in job.agent.q_rows(wk, wq, bk, h)]
     rows.sort(key=lambda r: -r["q"])
+    (cwk, cwq, cbk), k = canonicalize(wk, wq, bk)
     return jsonify({
         "qvalues": rows,
         "canonical": {"wk": sq_name(cwk), "wq": sq_name(cwq), "bk": sq_name(cbk), "symmetry": k},

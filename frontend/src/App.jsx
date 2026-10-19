@@ -4,7 +4,7 @@ import ExploreMode from "./components/ExploreMode.jsx";
 import TrainMode from "./components/TrainMode.jsx";
 import DashboardMode from "./components/DashboardMode.jsx";
 import Tour from "./tour/Tour.jsx";
-import BackendStatus from "./components/BackendStatus.jsx";
+
 import { TOURS } from "./tour/tours.js";
 import { clearStored, usePersistentState } from "./lib/storage.js";
 import { clearBrowserAgents } from "./lib/browserAgents.js";
@@ -103,7 +103,6 @@ export default function App() {
         <div id="page-dashboard" hidden={mode !== "dashboard"}><DashboardMode active={mode === "dashboard"} onNavigate={switchTo} /></div>
       </main>
 
-      <BackendStatus />
 
       {tourOpen && (
         <Tour key={mode} scope={mode} steps={TOURS[mode]} onClose={closeTour} always={always} onAlwaysChange={setAlways} />

@@ -6,6 +6,7 @@ import { api } from "../api.js";
 import { useBrowserAgents, browserAgentMove, browserQValues } from "./browserAgents.js";
 import { useLiveJobs } from "./live.js";
 import { useServerInfo } from "./server.js";
+import { METHODS } from "./engine.js";
 
 export function parseAgentId(sel) {
   if (!sel) return null;
@@ -23,15 +24,15 @@ export function useAgentOptions() {
   const serverUsable = !!server?.reachable && !!server.serverTraining;
   const { jobs, loaded: sLoaded, transport } = useLiveJobs();
 
+  const fmt = (n) => (n >= 1e6 ? `${(n / 1e6).toFixed(n >= 1e7 ? 0 : 1)}M` : `${Math.round(n / 1000)}k`);
   const browser = agents.map((a) => {
     const l = live[a.id];
-    const episodes = (l || a).episodes_done;
     return {
       value: `b:${a.id}`,
       kind: "browser",
       ready: !!(l?.has_qtable || a.has_qtable),
       started: a.started_at,
-      label: `${a.id.slice(1, 7)} · browser · ${episodes.toLocaleString()} ep · ${STATUS[(l || a).status] || a.status}`,
+      label: `${METHODS[a.params.method] || a.params.method} · ${fmt((l || a).decisions_done)} decisions · ${STATUS[(l || a).status] || a.status}`,
     };
   });
   const remote = serverUsable
@@ -40,21 +41,23 @@ export function useAgentOptions() {
         kind: "server",
         ready: true,
         started: j.started_at,
-        label: `${j.job_id.slice(0, 6)} · server · ${j.episodes_done.toLocaleString()} ep · ${STATUS[j.status] || j.status}`,
+        label: `${METHODS[j.method] || "server"} · server · ${fmt(j.decisions_done ?? 0)} decisions · ${STATUS[j.status] || j.status}`,
       }))
     : [];
   const options = [...browser, ...remote].sort((a, b) => b.started - a.started);
   return { options, loaded: bLoaded && (sLoaded || !serverUsable), transport: serverUsable ? transport : "browser" };
 }
 
+/** Greedy move of the selected agent; the remaining budget h is part of the state. */
 export function agentMove(sel, pos) {
   const a = parseAgentId(sel);
-  if (a.kind === "browser") return browserAgentMove(a.id, pos.wk, pos.wq, pos.bk);
+  if (a.kind === "browser") return browserAgentMove(a.id, pos.wk, pos.wq, pos.bk, pos.moves_left);
   return api.agentMove(pos.wk, pos.wq, pos.bk, pos.moves_left, "mc", a.id);
 }
 
-export function agentQValues(sel, wk, wq, bk) {
+/** Learned value of every legal move at remaining budget h. */
+export function agentQValues(sel, wk, wq, bk, h) {
   const a = parseAgentId(sel);
-  if (a.kind === "browser") return browserQValues(a.id, wk, wq, bk);
-  return api.trainQtable(a.id, wk, wq, bk);
+  if (a.kind === "browser") return browserQValues(a.id, wk, wq, bk, h);
+  return api.trainQtable(a.id, wk, wq, bk, h);
 }

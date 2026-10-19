@@ -5,7 +5,7 @@ This file answers five questions:
 1. What is the agent in **Play**, and where does it come from?
 2. What does **Explore values** (the Q-table) show?
 3. What does the **Results** page show?
-4. What is the difference between **Optimal (DP)** and **Trained (Monte Carlo)**?
+4. What is the difference between **Optimal (DP)** and a **trained agent (MC / TD)**?
 5. What does **Live Training** do?
 
 ---
@@ -84,46 +84,51 @@ That is the whole agent: **a lookup in a precomputed table**. No search and no r
 
 > If you delete `backend/app/data/`, the optimal agent disappears. Click "Solve DP" in the Explore tab and it is rebuilt from scratch in about 3 minutes.
 
-### 1.3 The Trained (Monte Carlo) agent
+### 1.3 The trained agents (MC and TD)
 
-**Where it lives.** It lives **in the server's memory (RAM) only**. It is created when you click **Start training** in Live Training. Each run is a "job" with an id, and each job holds one `MCAgent`. **If you restart the server, all trained agents are lost.** You then have to train again.
+**Where they live.** You create one with **Start training** in Live Training. By default it trains **in your browser** (a Web Worker) and is saved there (IndexedDB), so it survives reloads and works on the hosted site. With a local or long-running server you can also train on the server (**Run on: Server**); those agents live in the server's memory and disappear when it restarts.
 
-**How it is created.** [mc_agent.py:75](backend/app/mc_agent.py#L75) `run_episode` runs once per training game:
+**The algorithm is the report's** ([engine.js](frontend/src/lib/engine.js), and [tabular.py](backend/app/tabular.py) on the server):
 
-1. Start from a random board.
-2. White plays ε-greedy: 95 % of the time the move with the highest Q, 5 % of the time a random legal move. Black plays randomly. The game runs until it ends.
-3. Compute the actual return G that followed each move.
-4. Move each Q-value a little bit (α = 0.01) toward that G: `Q ← Q + α (G − Q)` ([mc_agent.py:121](backend/app/mc_agent.py#L121)).
+- **Five methods:** MC (mean, 1/N), MC (constant α), SARSA, Expected SARSA, Q-learning.
+- **State:** board **and moves left h**. The Q-table key is `(h − 1) × 499,496 + shared(board, move)`. The 8 board symmetries are shared; the deadline never is. That makes 19,979,840 entries.
+- **Protocol:**
+  - every episode starts from a random legal board and a random h in 1…40;
+  - ε = max(0.02, (1 + D/10,000)^−½) after D decisions, fixed within an episode;
+  - Q0 = 0, α = 0.10 (1/N for MC mean);
+  - the budget is counted in **decisions**, as in the report.
+- **Updates:**
+  - MC waits for the end of the game and moves each Q toward the actual return G.
+  - SARSA, Expected SARSA and Q-learning update after every move toward r + γ·(estimated value of what follows).
+  - At a terminal move (mate, stalemate, queen lost, deadline) the target is just r.
 
-The Q-table is a Python dictionary. A key is (position up to the 8 board symmetries, piece, destination), and its value is the estimated Q.
+**How it picks a move:** it reads the Q-values of the legal moves at the current h and plays the highest (first maximum). A move it has **never tried** keeps Q0 = 0.
 
-**How it picks a move.** [mc_agent.py:126](backend/app/mc_agent.py#L126) `best_move_for` → [mc_agent.py:56](backend/app/mc_agent.py#L56) `greedy_move` does three things:
+**Does it match the report?** Yes. With the report's 20-million-decision budget (about a minute in the browser):
 
-1. It looks up the Q-value of every legal move.
-2. It takes the highest one. Ties are broken at random.
-3. A move it has **never tried** still has its starting value Q0 (+1 with the report's settings). That is why a barely-trained agent loves untried moves.
+| | Return | Mates |
+|---|---|---|
+| Q-learning — this app | 0.55–0.57 | ≈ 93 % |
+| Q-learning — report | 0.5567 | 92.88 % |
+| MC constant — this app | 0.407 | 89.7 % |
+| MC constant — report | 0.4016 | 89.60 % |
 
 ---
 
-## 2. Optimal (DP) vs Trained (Monte Carlo)
+## 2. Optimal (DP) vs learned (MC / TD)
 
-| | **Optimal (DP)** | **Trained (Monte Carlo)** |
+| | **Optimal (DP)** | **Learned (MC / TD)** |
 |---|---|---|
 | Idea | **Planning**: compute the answer from the rules | **Learning**: discover the answer by playing |
 | Needs the model (all Black replies and their probabilities)? | **Yes** | **No**, it only sees the games it plays |
-| What it stores | V\*(s, h) and π\*(s, h) for all 144,508 boards × 40 budgets | Q(s, a) for ~18,081 symmetry classes, **without h** |
-| How values are obtained | 40 exact Bellman sweeps (backward induction) | Averages of sampled returns |
-| Exact? | **Yes**: the true optimum | **No**: an estimate that improves with more episodes |
-| Cost | ~3 min once | Report: 100 million games × 3 seeds (hours) |
-| Result | v\* = 0.9271, 100 % mates, 4.70 moves on average | Report (100M games): 0.9022, > 99.99 % mates, 6.02 moves |
-| Role in the project | The **ground truth** (the answer key) | The **student** being graded against it |
+| What it stores | V\*(s, h) and π\*(s, h) for all 144,508 boards × 40 budgets | Q(s, h, a) for 499,496 symmetry-shared (board, move) pairs × 40 budgets |
+| How values are obtained | 40 exact Bellman sweeps (backward induction) | Sampled returns (MC) or bootstrapped targets (TD) |
+| Exact? | **Yes**: the true optimum | **No**: estimates that improve with experience |
+| Cost | ~3 min once | 20 million decisions per run in the report (~1 min in the browser) |
+| Result | v\* = 0.9271, 100 % mates, 4.70 moves | Report, Q-learning: 0.5567, 92.88 % mates, 18.95 moves |
+| Role in the project | The **ground truth** (the answer key) | The **students** being graded against it |
 
-Two important consequences:
-
-- **DP cannot be beaten on average.** MC tries to get as close to it as possible without knowing the rules of the environment.
-- **MC ignores h** (the number of moves left). It plays the same move whether 40 moves or 2 moves are left. DP adapts to h. This is one reason MC stays slightly below DP (0.9022 vs 0.9271).
-
-Why do MC at all, if DP is exact? Most real problems are too big to enumerate, or nobody knows the model. KQvK is small, so we can compute the exact answer and use it to **check** that MC works.
+DP cannot be beaten on average. The learners try to get close without knowing the model. Why learn at all, if DP is exact? Most real problems are too big to enumerate, or nobody knows the model. KQvK is small, so we can compute the exact answer and use it to **check** the learners.
 
 ---
 
@@ -147,7 +152,7 @@ The conversion is exact: a mate on White's n-th move is worth q = 2·0.99ⁿ⁻�
 
 **Values from:**
 - **Exact (DP):** the true values (the answer key). ★ marks every optimal move — ties are common: from Kc6, Qe4 vs Ka8, **6 moves** all force mate in 2. "Moves left" (h) matters here.
-- **Learned (MC):** the trained agent's estimates, with how many times each move was tried. The MC table ignores h.
+- **Learned:** a trained agent's estimates (MC or TD) at the chosen h, with how many times each move was tried.
 - **Compare:** true and learned values side by side, plus a sentence saying whether the agent's chosen move is optimal.
 
 Good examples to load: "Trap" (Ke1, Qd1 vs Ke8 — Qd7 and Qd8 hang the queen, shown ✗) and "Mate in 1 next to a stalemate trap" (Kf6, Qa7 vs Kh8 — Qg7 mates, Qf7 stalemates).
@@ -156,36 +161,36 @@ Good examples to load: "Trap" (Ke1, Qd1 vs Ke8 — Qd7 and Qd8 hang the queen, s
 
 ## 4. Results — what you are looking at
 
-1. **Bar charts:** mate rate and mean return for four policies:
-   - **Uniform random:** any legal move. 1.2 % mates.
-   - **Safe random:** take a mate-in-one if there is one; otherwise play a random move that neither stalemates nor leaves the queen en prise. 15.9 % mates.
-   - **MC agent:** the report's 100-million-game result. > 99.99 % mates.
-   - **Optimal (DP):** 100 % mates.
-2. **"Are the report's numbers right?" table:** the server recomputes the random baselines and π\* **exactly** on all 144,508 starting boards, and puts a ✓ when they match the report. All of them match.
-3. **Real learning curves:** how good the MC agent's policy actually is after 1k … 500k training games, measured with this app, for three hyperparameter settings.
-4. **DP vs MC table:** the same comparison as section 2 above.
-5. **Cards** with the MDP numbers (states, budget, γ, rewards) and the report's MC results.
+1. **Your session:** your finished games and the agents you trained, saved in this browser.
+2. **Bar charts (reference):** mate rate and mean return for:
+   - random play;
+   - "safe" random (mate-in-one if possible, otherwise a move that neither stalemates nor hangs the queen);
+   - MC (constant) and Q-learning from the report's comparison;
+   - the optimal policy.
+3. **"Are the report's numbers right?":** the server recomputes the baselines and π\* **exactly** on all 144,508 starting boards and puts a ✓ when they match the report.
+4. **Final MC/TD comparison:** the report's table (5 methods, 20 million decisions × 3 seeds), with Q-learning selected.
+5. **Cards:** the MDP numbers and the report's training protocol.
 
-What "exactly recomputed" means: we take the DP's backward calculation, but instead of taking the **best** move we **average over the moves the policy would play**. That gives the exact expected return of *any* policy, with no random sampling. The code is in [policy_eval.py:82](backend/app/policy_eval.py#L82).
+The earlier "100 million games" Monte Carlo figure is **no longer shown**: the report found no logs supporting it.
+
+What "exactly recomputed" means: the DP's backward calculation, but **averaging over the moves the policy would play** instead of taking the best one. That gives the exact expected return of *any* policy, with no sampling ([policy_eval.py](backend/app/policy_eval.py)).
 
 ---
 
 ## 5. Live Training — what you are looking at
 
-You start a training run (100 to 500,000 games). The chart shows two different things:
+Choose a **method** and a **budget** (Quick demo = 2 M decisions, a few seconds; Report budget = 20 M, about a minute), then **Start training**. The chart shows:
 
-- **Line (training return):** the average result of the last 500 training games. It includes the 5 % random exploration moves, so it is noisy and a bit pessimistic.
-- **Green dots (exact evaluation):** the true quality of what the agent has learned so far. They are computed on all 144,508 boards, with no exploration, so you can compare them directly with v\* = 0.927.
+- **Line:** the average return of the last 500 training episodes. It is noisy, because the agent explores and episodes start with a random h.
+- **Green dots:** tests of the greedy policy from h = 40, every 10 % of the run. In the browser they use 5,000 fixed games (an estimate, ±0.01); on the server, an exact evaluation on all 144,508 boards.
+- **Dotted line:** the report's result for this method at 20 M decisions, for comparison.
 
-Two presets:
+Early in training, every method is still poor. The report observes the same thing at 1 and 5 million decisions.
 
-- **Report settings** (α = 0.01, Q0 = +1): the presentation's algorithm. It is slow at first and stays near random for the first ~10,000 games, because every untried move looks perfect (+1). At 500k games it reaches +0.685 (92.5 % mates).
-- **Fast demo** (α = 0.1, Q0 = 0): learns visibly within ~30,000 games (+0.41). It explores less, so its mates are slower.
-
-Each finished run appears in the job list of **Play** and **Explore**. You can then play against it, or inspect its Q-values.
+Each run appears in the agent picker of **Play** and **Explore** once its first checkpoint is saved (10 % of the run). If there is no agent yet, those pages show a **Train an agent** button that opens this page.
 
 ---
 
 ## 6. One-sentence summary
 
-The **agent** is White. It always plays "the move with the highest value in its table". With **Optimal (DP)**, that table was computed exactly from the rules and loaded from `backend/app/data/` at server start. With **Trained (Monte Carlo)**, the table was learned by playing games in a Live Training job and only lives in the server's memory. The **Black king** is never an agent: it just moves at random.
+The **agent** is White. It always plays "the move with the highest value in its table". With **Optimal (DP)**, that table was computed exactly from the rules and loaded from `backend/app/data/` at server start. With a **trained agent** (MC or TD), the table was learned by playing games in Live Training — usually in your browser, where it is saved. The **Black king** is never an agent: it just moves at random.
