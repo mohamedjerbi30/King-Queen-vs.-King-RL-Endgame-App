@@ -6,7 +6,8 @@ import DashboardMode from "./components/DashboardMode.jsx";
 import Tour from "./tour/Tour.jsx";
 import { TOURS } from "./tour/tours.js";
 import { clearStored, usePersistentState } from "./lib/storage.js";
-import { Button } from "./ui/index.jsx";
+import { Button, Callout } from "./ui/index.jsx";
+import { useServerInfo } from "./lib/server.js";
 
 const MODES = [
   { key: "play", label: "Play", blurb: "Play the endgame yourself or watch an agent mate." },
@@ -20,6 +21,7 @@ export default function App() {
   const [seen, setSeen] = usePersistentState("tour.seen", {});
   const [always, setAlways] = usePersistentState("tour.always", false);
   const [tourOpen, setTourOpen] = useState(false);
+  const server = useServerInfo();
 
   // Open the guide automatically when a page is shown for the first time
   // (or every time, if the user ticked "show every time").
@@ -74,6 +76,17 @@ export default function App() {
           </button>
         ))}
       </nav>
+      {server?.serverless && (
+        <Callout tone="warn" tour="serverless-banner">
+          <strong>Limited hosted version.</strong> This backend runs on a serverless host (Vercel): every request may be
+          answered by a different short-lived instance. You can play games yourself, but the <strong>optimal agent</strong>,
+          the <strong>exact values</strong>, <strong>training</strong> and <strong>trained agents</strong> need a long-running server.
+          Run the app locally (<code>python run.py</code>) or deploy the backend on Render — see DEPLOY.md.
+        </Callout>
+      )}
+      {server && !server.reachable && (
+        <Callout tone="warn">The backend cannot be reached. Start it with <code>python run.py</code> (or check the deployed API URL).</Callout>
+      )}
       <p className="page-blurb">{current.blurb}</p>
 
       {/* All pages stay mounted so games, positions and training views survive tab switches. */}

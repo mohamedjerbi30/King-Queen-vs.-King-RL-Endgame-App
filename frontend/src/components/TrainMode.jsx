@@ -7,6 +7,7 @@ import { usePersistentState } from "../lib/storage.js";
 import { useSelectedJob } from "./JobPicker.jsx";
 import { useJobStream } from "../lib/live.js";
 import { recordRun } from "../lib/history.js";
+import { useServerInfo } from "../lib/server.js";
 import { Badge, Button, Callout, Card, ErrorText, Field, NumberInput, ProgressBar, Segmented, StatRow } from "../ui/index.jsx";
 
 const V_STAR = 0.927126;
@@ -26,6 +27,8 @@ export default function TrainMode() {
   const [reconnect, setReconnect] = useState(0);
   const { job, transport, missing } = useJobStream(jobId, reconnect);
   const [error, setError] = useState(null);
+  const server = useServerInfo();
+  const cannotTrain = !!server?.serverless;
 
   const setParam = (k) => (v) => {
     setParams({ ...params, [k]: v });
@@ -136,9 +139,15 @@ export default function TrainMode() {
             <NumberInput value={params.budget} min={1} max={40} onChange={setParam("budget")} />
           </Field>
           <div className="button-row" data-tour="train-buttons">
-            <Button onClick={start} disabled={running}>▶ Start training</Button>
+            <Button onClick={start} disabled={running || cannotTrain}>▶ Start training</Button>
             <Button variant="secondary" onClick={stop} disabled={!running}>■ Stop</Button>
           </div>
+          {cannotTrain && (
+            <Callout tone="warn">
+              Training is disabled on this serverless host: the run would be lost as soon as the request ends.
+              Run the backend locally or on a long-running server (see DEPLOY.md).
+            </Callout>
+          )}
           <ErrorText>{error}</ErrorText>
         </Card>
 

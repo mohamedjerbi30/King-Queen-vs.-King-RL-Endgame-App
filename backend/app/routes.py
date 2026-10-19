@@ -1,3 +1,6 @@
+import os
+import uuid
+
 from flask import Blueprint, jsonify, request
 
 from .chess_engine import (
@@ -11,6 +14,18 @@ from .state_space import apply_symmetry
 from .results_data import OFFICIAL_RESULTS
 
 bp = Blueprint("api", __name__, url_prefix="/api")
+
+# Serverless hosts (Vercel, AWS Lambda) run each request in a short-lived,
+# possibly different instance: training jobs kept in memory cannot survive
+# there. The frontend reads this flag to explain it instead of failing.
+SERVERLESS = bool(os.environ.get("VERCEL") or os.environ.get("AWS_LAMBDA_FUNCTION_NAME"))
+INSTANCE_ID = uuid.uuid4().hex[:8]  # identifies this process in error messages
+
+UNKNOWN_JOB = (
+    "This trained agent does not exist on this server instance. The server was "
+    "restarted, or it runs on a serverless host (e.g. Vercel) that cannot keep "
+    "training jobs between requests — train again on a long-running server."
+)
 
 
 # ---------------------------------------------------------------- helpers
@@ -32,7 +47,7 @@ def _moves_json(moves):
 # ---------------------------------------------------------------- meta
 @bp.get("/health")
 def health():
-    return jsonify({"ok": True})
+    return jsonify({"ok": True, "serverless": SERVERLESS, "instance": INSTANCE_ID})
 
 
 @bp.get("/constants")
@@ -105,7 +120,7 @@ def agent_move():
     if source == "mc" and job_id:
         job = job_registry.get(job_id)
         if job is None:
-            return jsonify({"error": "unknown job_id"}), 404
+            return jsonify({"error": UNKNOWN_JOB, "code": "unknown_job", "instance": INSTANCE_ID}), 404
         move, val = job.agent.best_move_for(wk, wq, bk)
         if move is None:
             return jsonify({"error": "no legal move"}), 404
@@ -196,7 +211,7 @@ def train_start():
 def train_status(job_id):
     job = job_registry.get(job_id)
     if job is None:
-        return jsonify({"error": "unknown job_id"}), 404
+        return jsonify({"error": UNKNOWN_JOB, "code": "unknown_job", "instance": INSTANCE_ID}), 404
     return jsonify(job.summary())
 
 
@@ -204,7 +219,7 @@ def train_status(job_id):
 def train_stop(job_id):
     job = job_registry.get(job_id)
     if job is None:
-        return jsonify({"error": "unknown job_id"}), 404
+        return jsonify({"error": UNKNOWN_JOB, "code": "unknown_job", "instance": INSTANCE_ID}), 404
     job.stop()
     return jsonify({"stopped": True})
 
@@ -218,7 +233,7 @@ def train_jobs():
 def train_evaluate(job_id):
     job = job_registry.get(job_id)
     if job is None:
-        return jsonify({"error": "unknown job_id"}), 404
+        return jsonify({"error": UNKNOWN_JOB, "code": "unknown_job", "instance": INSTANCE_ID}), 404
     if dp_state.solution is None:
         return jsonify({"error": "exact evaluation needs the DP solution (solve it first)"}), 409
     job.start_evaluation()
@@ -229,7 +244,7 @@ def train_evaluate(job_id):
 def train_qtable(job_id):
     job = job_registry.get(job_id)
     if job is None:
-        return jsonify({"error": "unknown job_id"}), 404
+        return jsonify({"error": UNKNOWN_JOB, "code": "unknown_job", "instance": INSTANCE_ID}), 404
     wk, wq, bk = int(request.args["wk"]), int(request.args["wq"]), int(request.args["bk"])
     err = _position_error(wk, wq, bk)
     if err:

@@ -6,6 +6,7 @@ import { api } from "../api.js";
 import { usePersistentState } from "../lib/storage.js";
 import { gameRecord, moveLabel, sqName, valueMeaning, valueTag } from "../lib/chess.js";
 import { recordGame } from "../lib/history.js";
+import { useServerInfo } from "../lib/server.js";
 import { Badge, Button, Callout, Card, ErrorText, Field, NumberInput, Segmented, Select } from "../ui/index.jsx";
 
 const EMPTY_GAME = {
@@ -37,13 +38,16 @@ export default function PlayMode({ active }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
   const busyRef = useRef(false);
+  const server = useServerInfo();
   const [bannerHidden, setBannerHidden] = useState(false);
   useEffect(() => setBannerHidden(false), [game.outcome]); // show it again for each finished game
 
   const pos = game.position;
   const mcAvailable = jobs.some((j) => j.job_id === jobId);
-  const agentAvailable = source === "dp" ? dpReady : mcAvailable;
-  const agentProblem = source === "dp"
+  const agentAvailable = source === "dp" ? dpReady : mcAvailable && !server?.serverless;
+  const agentProblem = source === "mc" && server?.serverless
+    ? "Trained agents cannot be kept on this serverless host (each request may reach a different instance). Use the local app or a long-running server."
+    : source === "dp"
     ? (dpReady ? null : "The exact DP solution is not loaded on this server yet (Explore → Solve DP).")
     : (mcAvailable ? null : "No trained Monte Carlo agent yet — start a run in Live Training first.");
 
